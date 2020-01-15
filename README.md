@@ -1,15 +1,25 @@
 # Fulcrum
-Distributed ultra scalable Database 
+Distributed Ultra Scalable Database 
 
 # plans
 
-* Typed Trees that support working directly with serde-friendly types instead of raw bytes,
-  and also allow the deserialized form to be stored in the shared cache for speedy access.
-* [LSM tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree)-like write performance
-  with [traditional B+ tree](https://en.wikipedia.org/wiki/B%2B_tree)-like read performance
-* MVCC and snapshots
-* forward-compatible binary format
-* concurrent snapshot delta generation and recovery
-* consensus protocol for [PC/EC](https://en.wikipedia.org/wiki/PACELC_theorem) systems
-* pluggable conflict detection and resolution strategies for gossip + CRDT-based [PA/EL](https://en.wikipedia.org/wiki/PACELC_theorem) systems
-* first-class programmatic access to replication stream
+- Grpc for remoting
+- Protobuf .proto files for stored data
+- Flatbufs for stored data
+- Async Rust server
+- Native clients for Rust/.Net/Java
+- sled, as embedded storage (millions/sec reads/writes for short data)
+- Special treatment for long keys
+- Special treatment for long values
+- Long values partitioning 
+- CDN-like lru cache-through servers for value parts
+- Server replication via Raft and CRDT
+- Merkle-based data consistency
+- "soft-delete" 
+- "key TTL/expiration"
+- Orleans inspired distributed transactions (AKA external ACID) 
+- ACL-based security
+- Regex indices
+- Native sharding
+- Automatic query optimisation
+- SQL
