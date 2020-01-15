@@ -1,0 +1,304 @@
+syntax = "proto3";
+
+package fulcrum;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+/// Errors
+
+message InternalError {
+  message EncodeError {
+    uint64 required  = 1;
+    uint64 remaining = 2;
+  }
+
+  message DecodeError {
+    message StackLine {
+      string message = 1;
+      string fiels   = 2;
+    }
+    /// A 'best effort' root cause description.
+    string description       = 1;
+    /// A stack of (message, field) name pairs, which identify the specific
+    /// message type and field where decoding failed. The stack contains an
+    /// entry per level of nesting.
+    repeated StackLine stack = 2;
+  }
+
+  oneof Cause {
+    string      missingRequiredArgument   = 1;
+    EncodeError storageValueEncodingError = 2;
+    DecodeError storageValueDecodingError = 3;
+    string      storageError              = 4;
+  }
+}
+
+
+/// CDN
+
+message CdnUid {
+  string message = 1;
+}
+
+message CdnValue {
+  message Batch {
+    repeated CdnUid uids = 1;
+  }
+  oneof message {
+    bytes bytes  = 6; 
+    Batch batch  = 10;
+  }
+}
+
+message CdnKeyValue {
+  CdnUid    key   = 1;
+  CdnValue  value = 2;
+}
+
+// Query
+
+message CdnGetRequest {
+  CdnUid uid = 1;
+}
+
+message CdnGetResponse {
+  oneof Resp {
+    CdnValue              success   = 1;
+    google.protobuf.Empty notFound  = 2;
+    InternalError         error     = 100;
+  }
+}
+
+message CdnContainsRequest {
+  CdnUid uid = 1;
+}
+
+message CdnContainsResponse {
+  oneof Resp {
+    bool          success = 1;
+    InternalError error   = 100;
+  }
+}
+
+message CdnStreamValueResponse {
+  oneof Resp {
+    CdnKeyValue           success   = 1;
+    google.protobuf.Empty notFound  = 2;
+    InternalError         error     = 100;
+  }
+}
+
+service CdnQuery {
+  rpc Get(CdnGetRequest) returns (CdnGetResponse) {}
+  rpc Contains(CdnContainsRequest) returns (CdnContainsResponse) {}
+  rpc StreamValue(CdnGetRequest) returns (stream CdnStreamValueResponse) {}
+}
+
+// Control
+
+message CdnAddRequest {
+  CdnUid    uid   = 1;
+  CdnValue  value = 2;
+}
+
+message CdnAddResponse {
+  oneof Resp {
+    CdnUid                success = 1;
+    google.protobuf.Empty exists  = 2;
+    InternalError         error   = 100;
+  }
+}
+
+message CdnDeleteRequest {
+  CdnUid uid = 1;
+}
+
+message CdnDeleteResponse {
+  oneof Resp {
+    CdnUid                success   = 1;
+    google.protobuf.Empty notFound  = 2;
+    InternalError         error     = 100;
+  }
+}
+
+
+service CdnControl {
+  rpc Add(CdnAddRequest) returns (CdnAddResponse) {}
+  rpc Delete(CdnDeleteRequest) returns (CdnDeleteResponse) {}
+}
+
+//// Store
+
+message KeyUid {
+  bytes sip = 1;  
+}
+
+message KeyFamilyUid {
+  bytes sip = 1;  
+}
+
+message Key {
+  string key              = 1;
+  KeyFamilyUid keyFamily  = 2;
+  KeyUid uid              = 5;
+} 
+
+message ValueMetadata {
+  enum HashedWith {
+    SIP                 = 0;
+  }
+  enum Compression {
+    NONE                = 0;
+    LZ4                 = 1;
+    GZIP                = 2;
+  }
+  HashedWith hashedWith   = 1;
+  bytes hash              = 2;
+  Compression compression = 3;
+  uint32 sizeCompressed   = 4;
+  uint32 sizeFull         = 5;
+  string serializerId     = 6;
+}
+
+message KvMetadata {
+  enum Status {
+    ACTIVE              = 0;
+    DELETED             = 1;
+    EXPIRED             = 2;
+//    FAILURE             = 3;
+  }
+  enum UpdateAction {
+    ADDED               = 0;
+    UPDATED             = 1;
+    REPLICATED          = 2;
+  }
+  message User {
+    string          key = 1;
+  } 
+
+  KeyUid keyUid                       = 1;
+  Status status                       = 2;
+  google.protobuf.Timestamp expiry    = 3;
+  // VectorClock originated      = 4; 
+  // VectorClock locallyUpdated  = 5;
+  UpdateAction action                 = 6;
+  User createdBy                      = 7;
+  google.protobuf.Timestamp createdAt = 8;
+  string correlationId                = 9;
+  string originatorReplicaId          = 10;
+  ValueMetadata valueMetadata         = 20;
+}
+
+message Entry {
+  KeyUid keyUid = 1;
+  oneof message {
+    int32  i32    = 2;
+    int64  i64    = 3;
+    float  float  = 5;
+    double double = 6;
+    string str    = 7;
+    bytes  bytes  = 8; 
+    CdnUid cdn    = 10;
+  }
+}
+
+message AddRequest {
+  Key   key   = 1;
+  Entry value = 2;
+}
+
+message AddResponse {
+  enum Result {
+    Success = 0;
+    Exists  = 1;
+    Error   = 2;
+  }
+  Result result = 1;
+}
+
+message DeleteRequest {
+  KeyUid uid   = 1;
+}
+
+message DeleteResponse {
+  enum Result {
+    Success   = 0;
+    NotExist  = 1;
+    Error     = 2;
+  }
+  Result result = 1;
+}
+
+message CopyRequest {
+  message CopyRequestEntry {
+    string                    keyFrom = 1;
+    google.protobuf.Timestamp expiry  = 2; 
+    string                    keyTo   = 3;
+  }
+  string correlationId              = 1;
+  repeated CopyRequestEntry entries = 2;
+}
+
+message CopyResponse {
+  enum CopyResult {
+    SUCCESS             = 0;
+    FROM_KEY_NOT_FOUND  = 1;
+    TO_KEY_EXISTS       = 2;
+    FAILURE             = 3;
+  }
+  repeated CopyResult results = 1;
+}
+
+message GetRequest {
+  KeyUid uid = 1;
+}
+
+message GetResponse {
+  CdnValue value = 1;
+}
+
+message ContainsRequest {
+  KeyUid uid = 1;
+}
+
+message ContainsResponse {
+  bool result = 1;
+}
+
+message SearchRequest {
+  string keyPrefix      = 1;
+  uint32 pageSize       = 2;
+  uint32 page           = 3;
+  string correlationId  = 4;
+}
+
+message SearchKeyResponse {
+  string key          = 1;
+  KvMetadata metadata = 3;
+}
+
+message SearchKeyValueResponse {
+  string key          = 1;
+  bytes  value        = 2;
+  KvMetadata metadata = 3;
+}
+
+// message StoreSearchPageResponse {
+//   repeated KeyListResponse keyResponse = 1;
+// }
+
+service DataTree {
+  // rpc Transaction(stream AddRequest) returns (stream AddResponse) {}
+  // rpc ReadTransaction(stream AddRequest) returns (stream AddResponse) {}
+  // rpc Watch(AddRequest) returns (stream AddResponse) {}
+
+  rpc Add(AddRequest) returns (AddResponse) {}
+  rpc Copy(CopyRequest) returns (CopyResponse) {}
+  rpc Delete(DeleteRequest) returns (DeleteResponse) {}
+
+  rpc Get(GetRequest) returns (GetResponse) {}
+  rpc Contains(ContainsRequest) returns (ContainsResponse) {}
+  rpc SearchKeys(GetRequest) returns (stream SearchKeyResponse) {}
+  rpc SearchKeyValues(GetRequest) returns (stream SearchKeyValueResponse) {}
+}
