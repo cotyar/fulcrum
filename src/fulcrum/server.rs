@@ -62,7 +62,6 @@ pub mod data_access {
     use std::fmt;
 
     use prost::Message;
-    use sled::{Config as SledConfig};
     use bytes::{Buf, IntoBuf};
     
     use crate::pb::*;
@@ -138,7 +137,9 @@ pub mod data_access {
         }
     }
 
-    
+    pub fn contains_key (db: &Db, key: Option<CdnUid>) -> Result<bool, InternalError> {
+        process_uid(key, |_, uid_bytes| db.contains_key(uid_bytes)).map(|(_, v)| v)
+    }
 }
 
 use data_access::*;
@@ -215,13 +216,16 @@ impl CdnQuery for CdnServer {
     // #[instrument(level = "debug")]
     #[instrument]
     async fn get(&self, request: Request<CdnGetRequest>) -> GrpcResult<CdnGetResponse> {
+        use GetValueResult::*;
+        type Resp = cdn_get_response::Resp;
+
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
         let res = match get_value(&self.db, r.uid) {
-            GetValueResult::Found(uid, v) => cdn_get_response::Resp::Success(v),
-            GetValueResult::NotFound(_) => cdn_get_response::Resp::NotFound(()), 
-            GetValueResult::Error(e) => cdn_get_response::Resp::Error(e)
+            Found(uid, v) => Resp::Success(v),
+            NotFound(_) => Resp::NotFound(()), 
+            Error(e) => Resp::Error(e)
         };
 
         Ok(Response::new(CdnGetResponse { resp: Some(res) }))
@@ -231,8 +235,8 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
 
-        let res = match process_uid(r.uid, |_, uid_bytes| self.db.contains_key(uid_bytes)) {
-            Ok((_, v)) => cdn_contains_response::Resp::Success(v),
+        let res = match contains_key(&self.db, r.uid) {
+            Ok(v) => cdn_contains_response::Resp::Success(v),
             Err(e) => cdn_contains_response::Resp::Error(e)
         };
 
