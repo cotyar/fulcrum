@@ -9,7 +9,7 @@ pub mod pb {
 use tracing::{debug, error, Level};
 // use tracing_subscriber::FmtSubscriber;
 use tracing_attributes::instrument;
-// use tracing_futures;
+use tracing_futures;
 
 // use std::hash::{Hash, Hasher};
 use std::collections::HashSet;
@@ -46,6 +46,8 @@ impl fmt::Display for CdnUid {
         write!(f, "CdnUid: {}", self.message)
     }
 }
+
+impl Eq for CdnUid {}
 
 use internal_error::{*, Cause::*};
 
@@ -156,6 +158,37 @@ impl CdnControl for CdnServer {
 }
 
 
+enum GetValueResult {
+    Found (CdnUid, CdnValue),
+    NotFound (CdnUid),
+    Error (InternalError)
+}
+
+fn get_value (db: &Db, key: Option<CdnUid>) -> GetValueResult {
+    match process_uid(key, |_, uid_bytes| db.get(uid_bytes)) {
+        Ok((uid, Some(v_bytes))) => {
+            match CdnValue::from_bytes(v_bytes.into_buf()) {
+                Ok(v) => GetValueResult::Found(uid, v),
+                Err(e) => GetValueResult::Error(e),
+            }
+        },
+        Ok((uid, None)) => GetValueResult::NotFound(uid),
+        Err(e) => GetValueResult::Error(e)
+    }
+}
+
+type StreamValueStreamSender = mpsc::Sender<Result<CdnStreamValueResponse, Status>>;
+
+//#[instrument]
+async fn send_response_msg (tx: &mut StreamValueStreamSender, resp: cdn_stream_value_response::Resp) {
+    let msg = Ok(CdnStreamValueResponse { resp: Some(resp) });
+    debug!("StreamValueStream sending: {:?}", &msg);
+    match tx.send(msg).await {
+        Ok(()) => (),
+        Err(e) => error!("Value message transfer failed with: {}", e)
+    }
+}
+
 #[tonic::async_trait]
 impl CdnQuery for CdnServer {
 
@@ -165,15 +198,10 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
-        let res = match process_uid(r.uid, |_, uid_bytes| self.db.get(uid_bytes)) {
-            Ok((uid, Some(v_bytes))) => {
-                match CdnValue::from_bytes(v_bytes.into_buf()) {
-                    Ok(v) => cdn_get_response::Resp::Success(v),
-                    Err(e) => cdn_get_response::Resp::Error(e),
-                }
-            },
-            Ok((_, None)) => cdn_get_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
-            Err(e) => cdn_get_response::Resp::Error(e)
+        let res = match get_value(&self.db, r.uid) {
+            GetValueResult::Found(uid, v) => cdn_get_response::Resp::Success(v),
+            GetValueResult::NotFound(_) => cdn_get_response::Resp::NotFound(()), 
+            GetValueResult::Error(e) => cdn_get_response::Resp::Error(e)
         };
 
         Ok(Response::new(CdnGetResponse { resp: Some(res) }))
@@ -202,97 +230,52 @@ impl CdnQuery for CdnServer {
         let (mut tx, rx) = mpsc::channel(4);
         let db = self.db.clone();
 
-        type StreamValueStreamSender = mpsc::Sender<Result<CdnStreamValueResponse, Status>>;
-
-        async fn get_kv(db: &Db, tx: &mut StreamValueStreamSender, key: &CdnUid) -> Result<Vec<CdnUid>, InternalError> {
-            let res = match process_uid(Some(key.clone()), |_, uid_bytes| db.get(uid_bytes)) {
-                Ok((uid, Some(v_bytes))) => {
-                    let value = CdnValue::decode(v_bytes.into_buf()).unwrap();
-                    let v = value.message.as_ref().unwrap();
-                    match v {
-                        cdn_value::Message::Batch(cdn_value::Batch { uids }) => {
-                            let keys = uids.clone();
-                            let resp = cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(key.clone()), value: Some(value) });
-                            let msg = Ok(CdnStreamValueResponse { resp: Some(resp) });
-                            println!("StreamValueStream sending batch item: {:?}", &msg);
-                            tx.send(msg).await.unwrap();
-                            Ok(keys)
+        async fn get_kv(db: &Db, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
+            match get_value(db, key) {
+                GetValueResult::Found(uid, v) => {
+                    let msg = &v.message;
+                    match msg {
+                        Some(cdn_value::Message::Batch(cdn_value::Batch { uids })) => {
+                            send_response_msg(tx, cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
+                            uids.clone()
                         },
-                        _ => {
-                            let resp = cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(key.clone()), value: Some(value) });
-                            let msg = Ok(CdnStreamValueResponse { resp: Some(resp) });
-                            println!("StreamValueStream sending: {:?}", &msg);
-                            tx.send(msg).await.unwrap();
-                            Ok(Vec::new())
+                        Some(cdn_value::Message::Bytes(_)) => {
+                            send_response_msg(tx, cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
+                            Vec::new()
+                        },
+                        None => {
+                            let e = InternalError { cause: Some(StorageValueDecodingError( DecodeError { description: "'message' field is required".to_string(), stack: vec![ internal_error::decode_error::StackLine { message: "field is required".to_string(), field: "message".to_string() } ] })) };
+                            error! ("uid: {}, '{:?}'", uid, e);
+                            send_response_msg(tx, cdn_stream_value_response::Resp::Error(e)).await;
+                            Vec::new()
                         }
                     }
-
-                    // match CdnValue::from_bytes(v_bytes.into_buf()) {
-                    //     Ok(v) => cdn_get_response::Resp::Success(v),
-                    //     Err(e) => cdn_get_response::Resp::Error(e),
-                    // }
                 },
-                Ok((_, None)) => { 
-                    let resp = cdn_stream_value_response::Resp::NotFound(());
-                    tx.send(Ok(CdnStreamValueResponse { resp: Some(resp) })).await.unwrap();
-                    Ok(Vec::new())
-                }, //cdn_get_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
-                Err(e) => { 
-                    let resp = cdn_stream_value_response::Resp::Error(e);
-                    tx.send(Ok(CdnStreamValueResponse { resp: Some(resp) })).await.unwrap();
-                    Ok(Vec::new())
+                GetValueResult::NotFound(_) => { 
+                    send_response_msg(tx, cdn_stream_value_response::Resp::NotFound(())).await;
+                    Vec::new()
+                }, 
+                GetValueResult::Error(e) => {
+                    send_response_msg(tx, cdn_stream_value_response::Resp::Error(e)).await;
+                    Vec::new()
                 }
-            };
-
-            res
-    
-            // let uid_bytes = key.to_bytes()
-            //     .map_err(|s|cdn_stream_value_response::Failure {cause: Some(cdn_stream_value_response::failure::Cause::InternalError(format!("{:?}:{}", s.code(), s.message())))})?;
-    
-            // match db.get(&uid_bytes).unwrap() {
-            //     Some(v) => { 
-            //         let value = CdnValue::decode(v.into_buf()).unwrap();
-            //         let v = value.message.as_ref().unwrap();
-            //         match v {
-            //             cdn_value::Message::Batch(cdn_value::Batch { uids }) => {
-            //                 let keys = uids.clone();
-            //                 let resp = cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(key.clone()), value: Some(value) });
-            //                 let msg = Ok(CdnStreamValueResponse { result: Some(resp) });
-            //                 println!("StreamValueStream sending batch item: {:?}", &msg);
-            //                 tx.send(msg).await.unwrap();
-            //                 Ok(keys)
-            //             },
-            //             _ => {
-            //                 let resp = cdn_stream_value_response::Resp::Success(CdnKeyValue { key: Some(key.clone()), value: Some(value) });
-            //                 let msg = Ok(CdnStreamValueResponse { result: Some(resp) });
-            //                 println!("StreamValueStream sending: {:?}", &msg);
-            //                 tx.send(msg).await.unwrap();
-            //                 Ok(Vec::new())
-            //             }
-            //         }
-            //     },
-            //     None => {
-            //         let resp = cdn_stream_value_response::Resp::Error( cdn_stream_value_response::Failure { cause: Some(cdn_stream_value_response::failure::Cause::NotFound(())) });
-            //         tx.send(Ok(CdnStreamValueResponse { result: Some(resp) })).await.unwrap();
-            //         Ok(Vec::new())
-            //     }
-            // }
+            }
         }
 
         tokio::spawn(async move {
             let mut seen = HashSet::<String>::new(); // TODO: implement Hash for CdnUid
             let mut remaining_keys = VecDeque::new();
-            remaining_keys.push_back(key.unwrap());
+            remaining_keys.push_back(key);
             
             while 
                 match remaining_keys.pop_front() { 
                     Some (next_key) => {
-                        let rk = get_kv(&db, &mut tx, &next_key).await;
-                        for k in rk {
-                            // if !seen.contains(&k.message) {
-                            //     seen.insert(k.message.clone());
-                            //     remaining_keys.push_back(k);
-                            // }
+                        let keys = get_kv(&db, &mut tx, next_key).await;
+                        for k in keys {
+                            if !seen.contains(&k.message) {
+                                seen.insert(k.message.clone());
+                                remaining_keys.push_back(Some(k));
+                            }
                         }
                         true
                     },

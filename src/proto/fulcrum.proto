@@ -16,7 +16,7 @@ message InternalError {
   message DecodeError {
     message StackLine {
       string message = 1;
-      string fiels   = 2;
+      string field   = 2;
     }
     /// A 'best effort' root cause description.
     string description       = 1;
