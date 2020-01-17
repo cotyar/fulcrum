@@ -1,9 +1,9 @@
 #![warn(unused_imports)]
+#[macro_use]
 
 extern crate sled;
 extern crate raft;
 
-#[macro_use]
 extern crate log;
 
 extern crate tonic;
