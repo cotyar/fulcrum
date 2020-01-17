@@ -12,7 +12,10 @@ Staying on shoulders of Giants:
 - [x] *Grpc* for remoting
 - [x] Client-side *load balancing*
 - [x] *TLS* enabled communication
-- [ ] *OAuth* Authentication
+- [ ] Authentication
+  - [ ] *OAuth*
+  - [ ] *NTLM*
+  - [ ] *Kerberos*
 - [x] *Protobuf* .proto files for stored data
 - [ ] *Flatbufs* for stored data (as per *Apache Arrow*)
 - [x] *Async Rust* server
@@ -32,8 +35,11 @@ Staying on shoulders of Giants:
 - [ ] "soft-delete" 
 - [ ] keys *TTL* (expirations)
 - [ ] *Orleans* inspired *distributed transactions* (aka external *ACID*) 
-- [ ] *ACL*-based security
+- [ ] *ACL*-based authorizations
+  - [ ] *LDAP3* integration (*Active Directory*, etc)
 - [ ] *Regex* indices
 - [ ] Native *sharding*
 - [ ] Automatic *query optimisation*
+- [x] Remote logging and instrumentation 
+  - [ ] *Opentracing* 
 - [ ] *SQL*
