@@ -69,6 +69,8 @@ pub mod data_access {
     use crate::pb::cdn_query_server::*;
     use internal_error::{*, Cause::*};
 
+    use tracing::{debug, error, Level};
+
     use sled::Db;
 
     impl fmt::Display for CdnUid {
@@ -153,10 +155,41 @@ pub mod data_access {
             Ok((uid, None)) => DeleteResult::NotFound(uid),
             Err(e) => DeleteResult::Error(e)
         }
-        // Ok((uid, Some(_))) => cdn_delete_response::Resp::Success(uid),
-        // Ok((_, None)) => cdn_delete_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
-        // Err(e) => cdn_delete_response::Resp::Error(e)
+    }
 
+    pub enum AddResult {
+        Success (CdnUid),
+        Exists (CdnUid),
+        Error (InternalError)
+    }
+    
+    pub fn add (db: &Db, key: Option<CdnUid>, value: Option<CdnValue>) -> AddResult {
+        let res = || -> Result<AddResult, InternalError> {
+            let val = unwrap_field(value, "value")?;
+            let value_bytes = val.to_bytes()?;
+
+            let check_and_insert = |uid: &CdnUid, uid_bytes: &Vec<u8>| -> Result<_, ::sled::Error> {
+                let contains = db.contains_key(uid_bytes)?;
+                if contains { 
+                    Ok(AddResult::Exists(uid.clone()))
+                }
+                else {
+                    let existing = db.insert(uid_bytes, value_bytes)?; 
+                    if existing.is_some() {
+                        error!("Unexpected override of the value in store: '{}'", uid); 
+                    }
+                    Ok(AddResult::Success(uid.clone()))
+                } 
+            };    
+            
+            let (_, ret) = process_uid(key, check_and_insert)?;
+            Ok(ret)
+        };
+        
+        match res() {
+            Ok(resp) => resp,
+            Err(e) => AddResult::Error(e)
+        }
     }
 }
 
@@ -167,38 +200,19 @@ impl CdnControl for CdnServer {
 
     #[instrument]
     async fn add(&self, request: Request<CdnAddRequest>) -> GrpcResult<CdnAddResponse> {
+        use AddResult::*;
+        type Resp = cdn_add_response::Resp;
+
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
         
-        let res = || -> Result<cdn_add_response::Resp, InternalError> {
-            let value = unwrap_field(r.value, "value")?;
-            let value_bytes = value.to_bytes()?;
-
-            let check_and_insert = |uid1: &CdnUid, uid_bytes1: &Vec<u8>| -> Result<_, ::sled::Error> {
-                
-                let contains = self.db.contains_key(uid_bytes1)?;
-                if contains { 
-                    Ok(cdn_add_response::Resp::Exists(()))
-                }
-                else {
-                    let existing = self.db.insert(uid_bytes1, value_bytes)?; 
-                    if existing.is_some() {
-                        error!("Unexpected override of the value in store: '{}'", uid1); 
-                    }
-                    Ok(cdn_add_response::Resp::Success(uid1.clone()))
-                } 
-            };    
-            
-            let (_, ret) = process_uid(r.uid, check_and_insert)?;
-            Ok(ret)
-        };
-        
-        let result = match res() {
-            Ok(resp) => resp,
-            Err(e) => cdn_add_response::Resp::Error(e)
+        let res = match add(&self.db, r.uid, r.value) {
+            Success(uid) => Resp::Success(uid),
+            Exists(_) => Resp::Exists(()), 
+            Error(e) => Resp::Error(e)
         };
 
-        Ok(Response::new(CdnAddResponse { resp: Some(result) }))
+        Ok(Response::new(CdnAddResponse { resp: Some(res) }))
     }
 
     async fn delete(&self, request: Request<CdnDeleteRequest>) -> GrpcResult<CdnDeleteResponse> {

@@ -1,5 +1,5 @@
 [package]
-name = "sled_pg"
+name = "fulcrum"
 version = "0.1.0"
 authors = ["y"]
 edition = "2018"
