@@ -41,54 +41,8 @@ pub struct CdnServer {
     db: Db
 }
 
-impl fmt::Display for CdnUid {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "CdnUid: {}", self.message)
-    }
-}
-
-impl Eq for CdnUid {}
 
 use internal_error::{*, Cause::*};
-
-trait ProstMessageExt<T: ::prost::Message + Default> {
-    fn to_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
-    fn from_bytes<B: Buf>(msg_bytes: B) -> Result<T, InternalError>;
-}
-
-impl<T: ::prost::Message + Default> ProstMessageExt<T> for T {
-    fn to_bytes(self: &Self) -> Result<Vec<u8>, InternalError> { 
-        let mut msg_bytes = Vec::new();
-        self.encode(&mut msg_bytes)
-            .map_err(|e|
-                InternalError { cause: Some(StorageValueEncodingError(
-                    EncodeError { required: e.required_capacity() as u64, remaining: e.remaining() as u64 } )) })?;
-        Ok(msg_bytes)
-    }
-
-    fn from_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError> {
-        let v = Self::decode(msg_bytes)
-            .map_err(|e| {
-                let ee = Box::new(e) as Box<dyn std::error::Error>;
-                InternalError { cause: Some(StorageValueDecodingError(
-                    DecodeError { description: ee.to_string(), stack: Vec::new()} )) } // TODO: Populate Stack
-            })?;
-        Ok(v)
-    }
-}
-
-fn unwrap_field<T: ::prost::Message + Default>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
-    msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
-}
-
-fn process_uid<T> (r_uid: Option<CdnUid>, f: impl FnOnce(&CdnUid, &Vec<u8>) -> Result<T, ::sled::Error>) -> Result<(CdnUid, T), InternalError> {
-    let uid = unwrap_field(r_uid, "uid")?;
-    let uid_bytes = uid.to_bytes()?;
-
-    let old_value = f(&uid, &uid_bytes)
-        .map_err(|e| InternalError { cause: Some(StorageError(e.to_string())) })?;
-    Ok((uid, old_value))
-}
 
 
 // impl Hash for CdnValue {
@@ -103,6 +57,91 @@ fn process_uid<T> (r_uid: Option<CdnUid>, f: impl FnOnce(&CdnUid, &Vec<u8>) -> R
 //         self.message.hash(state);
 //     }
 // }
+
+pub mod data_access {
+    use std::fmt;
+
+    use prost::Message;
+    use sled::{Config as SledConfig};
+    use bytes::{Buf, IntoBuf};
+    
+    use crate::pb::*;
+    use crate::pb::cdn_control_server::*;
+    use crate::pb::cdn_query_server::*;
+    use internal_error::{*, Cause::*};
+
+    use sled::Db;
+
+    impl fmt::Display for CdnUid {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "CdnUid: {}", self.message)
+        }
+    }
+    
+    impl Eq for CdnUid {}    
+
+    pub trait ProstMessageExt<T: ::prost::Message + Default> {
+        fn to_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
+        fn from_bytes<B: Buf>(msg_bytes: B) -> Result<T, InternalError>;
+    }
+    
+    impl<T: ::prost::Message + Default> ProstMessageExt<T> for T {
+        fn to_bytes(self: &Self) -> Result<Vec<u8>, InternalError> { 
+            let mut msg_bytes = Vec::new();
+            self.encode(&mut msg_bytes)
+                .map_err(|e|
+                    InternalError { cause: Some(StorageValueEncodingError(
+                        EncodeError { required: e.required_capacity() as u64, remaining: e.remaining() as u64 } )) })?;
+            Ok(msg_bytes)
+        }
+    
+        fn from_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError> {
+            let v = Self::decode(msg_bytes)
+                .map_err(|e| {
+                    let ee = Box::new(e) as Box<dyn std::error::Error>;
+                    InternalError { cause: Some(StorageValueDecodingError(
+                        DecodeError { description: ee.to_string(), stack: Vec::new()} )) } // TODO: Populate Stack
+                })?;
+            Ok(v)
+        }
+    }
+    
+    pub fn unwrap_field<T: ::prost::Message + Default>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
+        msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
+    }
+    
+    pub fn process_uid<T> (r_uid: Option<CdnUid>, f: impl FnOnce(&CdnUid, &Vec<u8>) -> Result<T, ::sled::Error>) -> Result<(CdnUid, T), InternalError> {
+        let uid = unwrap_field(r_uid, "uid")?;
+        let uid_bytes = uid.to_bytes()?;
+    
+        let old_value = f(&uid, &uid_bytes)
+            .map_err(|e| InternalError { cause: Some(StorageError(e.to_string())) })?;
+        Ok((uid, old_value))
+    }
+
+    pub enum GetValueResult {
+        Found (CdnUid, CdnValue),
+        NotFound (CdnUid),
+        Error (InternalError)
+    }
+
+    pub fn get_value (db: &Db, key: Option<CdnUid>) -> GetValueResult {
+        match process_uid(key, |_, uid_bytes| db.get(uid_bytes)) {
+            Ok((uid, Some(v_bytes))) => {
+                match CdnValue::from_bytes(v_bytes.into_buf()) {
+                    Ok(v) => GetValueResult::Found(uid, v),
+                    Err(e) => GetValueResult::Error(e),
+                }
+            },
+            Ok((uid, None)) => GetValueResult::NotFound(uid),
+            Err(e) => GetValueResult::Error(e)
+        }
+    }
+
+    
+}
+
+use data_access::*;
 
 #[tonic::async_trait]
 impl CdnControl for CdnServer {
@@ -147,7 +186,7 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match process_uid(r.uid, |_, uid_bytes| self.db.remove(uid_bytes)) {
+        let res = match data_access::process_uid(r.uid, |_, uid_bytes| self.db.remove(uid_bytes)) {
             Ok((uid, Some(_))) => cdn_delete_response::Resp::Success(uid),
             Ok((_, None)) => cdn_delete_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
             Err(e) => cdn_delete_response::Resp::Error(e)
@@ -157,25 +196,6 @@ impl CdnControl for CdnServer {
     }
 }
 
-
-enum GetValueResult {
-    Found (CdnUid, CdnValue),
-    NotFound (CdnUid),
-    Error (InternalError)
-}
-
-fn get_value (db: &Db, key: Option<CdnUid>) -> GetValueResult {
-    match process_uid(key, |_, uid_bytes| db.get(uid_bytes)) {
-        Ok((uid, Some(v_bytes))) => {
-            match CdnValue::from_bytes(v_bytes.into_buf()) {
-                Ok(v) => GetValueResult::Found(uid, v),
-                Err(e) => GetValueResult::Error(e),
-            }
-        },
-        Ok((uid, None)) => GetValueResult::NotFound(uid),
-        Err(e) => GetValueResult::Error(e)
-    }
-}
 
 type StreamValueStreamSender = mpsc::Sender<Result<CdnStreamValueResponse, Status>>;
 
