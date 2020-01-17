@@ -118,27 +118,45 @@ pub mod data_access {
         Ok((uid, old_value))
     }
 
-    pub enum GetValueResult {
-        Found (CdnUid, CdnValue),
+    pub enum GetResult {
+        Success (CdnUid, CdnValue),
         NotFound (CdnUid),
         Error (InternalError)
     }
 
-    pub fn get_value (db: &Db, key: Option<CdnUid>) -> GetValueResult {
+    pub fn get (db: &Db, key: Option<CdnUid>) -> GetResult {
         match process_uid(key, |_, uid_bytes| db.get(uid_bytes)) {
             Ok((uid, Some(v_bytes))) => {
                 match CdnValue::from_bytes(v_bytes.into_buf()) {
-                    Ok(v) => GetValueResult::Found(uid, v),
-                    Err(e) => GetValueResult::Error(e),
+                    Ok(v) => GetResult::Success(uid, v),
+                    Err(e) => GetResult::Error(e),
                 }
             },
-            Ok((uid, None)) => GetValueResult::NotFound(uid),
-            Err(e) => GetValueResult::Error(e)
+            Ok((uid, None)) => GetResult::NotFound(uid),
+            Err(e) => GetResult::Error(e)
         }
     }
 
     pub fn contains_key (db: &Db, key: Option<CdnUid>) -> Result<bool, InternalError> {
         process_uid(key, |_, uid_bytes| db.contains_key(uid_bytes)).map(|(_, v)| v)
+    }
+
+    pub enum DeleteResult {
+        Success (CdnUid),
+        NotFound (CdnUid),
+        Error (InternalError)
+    }
+    
+    pub fn delete (db: &Db, key: Option<CdnUid>) -> DeleteResult {
+        match process_uid(key, |_, uid_bytes| db.remove(uid_bytes)) {
+            Ok((uid, Some(_))) => DeleteResult::Success(uid),
+            Ok((uid, None)) => DeleteResult::NotFound(uid),
+            Err(e) => DeleteResult::Error(e)
+        }
+        // Ok((uid, Some(_))) => cdn_delete_response::Resp::Success(uid),
+        // Ok((_, None)) => cdn_delete_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
+        // Err(e) => cdn_delete_response::Resp::Error(e)
+
     }
 }
 
@@ -184,13 +202,16 @@ impl CdnControl for CdnServer {
     }
 
     async fn delete(&self, request: Request<CdnDeleteRequest>) -> GrpcResult<CdnDeleteResponse> {
+        use DeleteResult::*;
+        type Resp = cdn_delete_response::Resp;
+
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match data_access::process_uid(r.uid, |_, uid_bytes| self.db.remove(uid_bytes)) {
-            Ok((uid, Some(_))) => cdn_delete_response::Resp::Success(uid),
-            Ok((_, None)) => cdn_delete_response::Resp::NotFound(()), //(Status::not_found(uid.to_string())),
-            Err(e) => cdn_delete_response::Resp::Error(e)
+        let res = match delete(&self.db, r.uid) {
+            Success(uid) => Resp::Success(uid),
+            NotFound(_) => Resp::NotFound(()), 
+            Error(e) => Resp::Error(e)
         };
 
         Ok(Response::new(CdnDeleteResponse { resp: Some(res) }))
@@ -216,14 +237,14 @@ impl CdnQuery for CdnServer {
     // #[instrument(level = "debug")]
     #[instrument]
     async fn get(&self, request: Request<CdnGetRequest>) -> GrpcResult<CdnGetResponse> {
-        use GetValueResult::*;
+        use GetResult::*;
         type Resp = cdn_get_response::Resp;
 
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
-        let res = match get_value(&self.db, r.uid) {
-            Found(uid, v) => Resp::Success(v),
+        let res = match get(&self.db, r.uid) {
+            Success(uid, v) => Resp::Success(v),
             NotFound(_) => Resp::NotFound(()), 
             Error(e) => Resp::Error(e)
         };
@@ -255,8 +276,8 @@ impl CdnQuery for CdnServer {
         let db = self.db.clone();
 
         async fn get_kv(db: &Db, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
-            match get_value(db, key) {
-                GetValueResult::Found(uid, v) => {
+            match get(db, key) {
+                GetResult::Success(uid, v) => {
                     let msg = &v.message;
                     match msg {
                         Some(cdn_value::Message::Batch(cdn_value::Batch { uids })) => {
@@ -275,11 +296,11 @@ impl CdnQuery for CdnServer {
                         }
                     }
                 },
-                GetValueResult::NotFound(_) => { 
+                GetResult::NotFound(_) => { 
                     send_response_msg(tx, cdn_stream_value_response::Resp::NotFound(())).await;
                     Vec::new()
                 }, 
-                GetValueResult::Error(e) => {
+                GetResult::Error(e) => {
                     send_response_msg(tx, cdn_stream_value_response::Resp::Error(e)).await;
                     Vec::new()
                 }
