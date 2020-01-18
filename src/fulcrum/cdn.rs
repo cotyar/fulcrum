@@ -135,7 +135,7 @@ impl CdnQuery for CdnServer {
         let db = self.db.clone();
 
         async fn get_kv(db: &Db, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
-            match get(db, key) {
+            match get::<CdnUid, CdnValue>(db, key) {
                 GetResult::Success(uid, v) => {
                     let msg = &v.message;
                     match msg {
