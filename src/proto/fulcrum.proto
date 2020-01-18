@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package fulcrum;
 
-import "google/protobuf/empty.proto";
+// import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 /// Errors
@@ -64,9 +64,9 @@ message CdnGetRequest {
 
 message CdnGetResponse {
   oneof Resp {
-    CdnValue              success   = 1;
-    google.protobuf.Empty notFound  = 2;
-    InternalError         error     = 100;
+    CdnValue      success   = 1;
+    CdnUid        notFound  = 2;
+    InternalError error     = 100;
   }
 }
 
@@ -83,9 +83,9 @@ message CdnContainsResponse {
 
 message CdnStreamValueResponse {
   oneof Resp {
-    CdnKeyValue           success   = 1;
-    google.protobuf.Empty notFound  = 2;
-    InternalError         error     = 100;
+    CdnKeyValue   success   = 1;
+    CdnUid        notFound  = 2;
+    InternalError error     = 100;
   }
 }
 
@@ -104,9 +104,9 @@ message CdnAddRequest {
 
 message CdnAddResponse {
   oneof Resp {
-    CdnUid                success = 1;
-    google.protobuf.Empty exists  = 2;
-    InternalError         error   = 100;
+    CdnUid        success = 1;
+    CdnUid        exists  = 2;
+    InternalError error   = 100;
   }
 }
 
@@ -116,9 +116,9 @@ message CdnDeleteRequest {
 
 message CdnDeleteResponse {
   oneof Resp {
-    CdnUid                success   = 1;
-    google.protobuf.Empty notFound  = 2;
-    InternalError         error     = 100;
+    CdnUid        success   = 1;
+    CdnUid        notFound  = 2;
+    InternalError error     = 100;
   }
 }
 

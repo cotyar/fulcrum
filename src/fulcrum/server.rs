@@ -2,9 +2,9 @@
 #![warn(unused_imports)]
 
 
-// pub mod pb {
-//     tonic::include_proto!("fulcrum");
-// }
+pub mod pb {
+    tonic::include_proto!("fulcrum");
+}
 
 use tracing::{debug, error, Level};
 // use tracing_subscriber::FmtSubscriber;
@@ -34,7 +34,6 @@ use internal_error::{*, Cause::*};
 
 mod data_access;
 use data_access::*;
-use data_access::pb as pb;
 
 mod cdn;
 use cdn::*;

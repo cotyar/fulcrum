@@ -3,9 +3,6 @@ use std::fmt;
 use prost::Message;
 use bytes::{Buf, IntoBuf};
 
-pub mod pb {
-    tonic::include_proto!("fulcrum");
-}
 
 use crate::pb::*;
 use crate::pb::cdn_control_server::*;

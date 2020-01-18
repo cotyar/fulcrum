@@ -19,10 +19,9 @@ use tokio::sync::mpsc;
 use tonic::{transport::Server, Request, Response, Status /*, Streaming*/};
 
 use crate::data_access::*;
-use crate::data_access::pb as pb;
-use pb::*;
-use pb::cdn_control_server::*;
-use pb::cdn_query_server::*;
+use crate::pb::*;
+use crate::pb::cdn_control_server::*;
+use crate::pb::cdn_query_server::*;
 
 use internal_error::{*, Cause::*};
 
@@ -51,7 +50,7 @@ impl CdnControl for CdnServer {
         
         let res = match add(&self.db, r.uid, r.value) {
             Success(uid) => Resp::Success(uid),
-            Exists(_) => Resp::Exists(()), 
+            Exists(uid) => Resp::Exists(uid), 
             Error(e) => Resp::Error(e)
         };
 
@@ -67,7 +66,7 @@ impl CdnControl for CdnServer {
         
         let res = match delete(&self.db, r.uid) {
             Success(uid) => Resp::Success(uid),
-            NotFound(_) => Resp::NotFound(()), 
+            NotFound(uid) => Resp::NotFound(uid), 
             Error(e) => Resp::Error(e)
         };
 
@@ -102,10 +101,11 @@ impl CdnQuery for CdnServer {
         
         let res = match get(&self.db, r.uid) {
             Success(uid, v) => Resp::Success(v),
-            NotFound(_) => Resp::NotFound(()), 
+            NotFound(uid) => Resp::NotFound(uid), 
             Error(e) => Resp::Error(e)
         };
 
+        debug!("Get Response: '{:?}'", res); 
         Ok(Response::new(CdnGetResponse { resp: Some(res) }))
     }
 
@@ -155,8 +155,8 @@ impl CdnQuery for CdnServer {
                         }
                     }
                 },
-                GetResult::NotFound(_) => { 
-                    send_response_msg(tx, Resp::NotFound(())).await;
+                GetResult::NotFound(uid) => { 
+                    send_response_msg(tx, Resp::NotFound(uid)).await;
                     Vec::new()
                 }, 
                 GetResult::Error(e) => {
