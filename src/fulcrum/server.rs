@@ -62,8 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let addr = addr.parse()?;
         let tx = tx.clone();
 
-        let control_server = CdnServer { addr, db: db.clone() };
-        let query_server = CdnServer { addr, db: db.clone() };
+        let control_server = FulcrumServer { addr, db: db.clone() };
+        let query_server = FulcrumServer { addr, db: db.clone() };
         let serve = Server::builder()
             .add_service(pb::cdn_control_server::CdnControlServer::new(control_server))
             .add_service(pb::cdn_query_server::CdnQueryServer::new(query_server))

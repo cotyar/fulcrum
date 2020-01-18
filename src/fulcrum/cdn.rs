@@ -32,13 +32,13 @@ type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
 
 #[derive(Debug)]
-pub struct CdnServer {
+pub struct FulcrumServer {
     pub addr: SocketAddr,
     pub db: Db
 }
 
 #[tonic::async_trait]
-impl CdnControl for CdnServer {
+impl CdnControl for FulcrumServer {
 
     #[instrument]
     async fn add(&self, request: Request<CdnAddRequest>) -> GrpcResult<CdnAddResponse> {
@@ -88,7 +88,7 @@ async fn send_response_msg (tx: &mut StreamValueStreamSender, resp: cdn_stream_v
 }
 
 #[tonic::async_trait]
-impl CdnQuery for CdnServer {
+impl CdnQuery for FulcrumServer {
 
     // #[instrument(level = "debug")]
     #[instrument]
