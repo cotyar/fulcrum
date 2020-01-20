@@ -42,4 +42,8 @@ Staying on shoulders of Giants:
 - [ ] Automatic *query optimisation*
 - [x] Remote logging and instrumentation 
   - [ ] *Opentracing* 
+- [ ] Write auto batching
+- [ ] Persistent Subscriptions
+- [ ] Value compression
+- [ ] Value encryption
 - [ ] *SQL*

@@ -3,20 +3,20 @@ use tracing::{debug, error, Level};
 use tracing_attributes::instrument;
 // use tracing_futures;
 
+// use futures::Stream;
+use std::fmt;
+use std::net::SocketAddr;
 // use std::hash::{Hash, Hasher};
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use prost::Message;
-use sled::{Config as SledConfig};
 use bytes::{Buf, IntoBuf};
 
-// use futures::Stream;
-use std::fmt;
-use std::net::SocketAddr;
-// use std::pin::Pin;
+use sled::{Db, Tree};
+
 use tokio::sync::mpsc;
-use tonic::{transport::Server, Request, Response, Status /*, Streaming*/};
+use tonic::{Request, Response, Status /*, Streaming*/};
 
 use crate::data_access::*;
 use crate::pb::*;
@@ -25,11 +25,16 @@ use crate::pb::cdn_query_server::*;
 
 use internal_error::{*, Cause::*};
 
-use sled::Db;
-
 
 type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
+
+#[derive(Debug)]
+pub struct Table {
+    pub db: Db,
+    pub tree: Tree
+}
+
 
 #[derive(Debug)]
 pub struct FulcrumServer {

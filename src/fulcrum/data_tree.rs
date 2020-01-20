@@ -34,11 +34,21 @@ type GrpcResult<T> = Result<Response<T>, Status>;
 
 #[tonic::async_trait]
 impl DataTree for FulcrumServer {
-    async fn add(
-        &self,
-        request: tonic::Request<super::AddRequest>,
+    async fn add(&self, request: tonic::Request<super::AddRequest>,
     ) -> Result<tonic::Response<super::AddResponse>, tonic::Status> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        use AddResult::*;
+        type Resp = cdn_add_response::Resp;
+
+        let r = request.into_inner();
+        debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
+        
+        let res = match add(&self.db, r.uid, r.value) {
+            Success(uid) => Resp::Success(uid),
+            Exists(uid) => Resp::Exists(uid), 
+            Error(e) => Resp::Error(e)
+        };
+
+        Ok(Response::new(AddResponse { resp: Some(res) }))
     }
     async fn copy(
         &self,
