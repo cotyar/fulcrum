@@ -8,7 +8,7 @@ use internal_error::{*, Cause::*};
 
 use tracing::{debug, error, Level};
 
-use sled::Db;
+use sled::{Db, Tree};
 
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : ProstMessage + Clone + fmt::Display {}
@@ -84,8 +84,8 @@ pub enum GetResult<T: Uid, U: ProstMessage> {
     Error (InternalError)
 }
 
-pub fn get<T: Uid, U: ProstMessage> (db: &Db, key: Option<T>) -> GetResult<T, U> {
-    match process_uid(key, |_, uid_bytes| db.get(uid_bytes)) {
+pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T, U> {
+    match process_uid(key, |_, uid_bytes| tree.get(uid_bytes)) {
         Ok((uid, Some(v_bytes))) => {
             match U::from_bytes(v_bytes.into_buf()) {
                 Ok(v) => GetResult::Success(uid, v),
@@ -97,8 +97,8 @@ pub fn get<T: Uid, U: ProstMessage> (db: &Db, key: Option<T>) -> GetResult<T, U>
     }
 }
 
-pub fn contains_key<T: Uid> (db: &Db, key: Option<T>) -> Result<bool, InternalError> {
-    process_uid(key, |_, uid_bytes| db.contains_key(uid_bytes)).map(|(_, v)| v)
+pub fn contains_key<T: Uid> (tree: &Tree, key: Option<T>) -> Result<bool, InternalError> {
+    process_uid(key, |_, uid_bytes| tree.contains_key(uid_bytes)).map(|(_, v)| v)
 }
 
 pub enum DeleteResult<T: Uid> {
@@ -107,8 +107,8 @@ pub enum DeleteResult<T: Uid> {
     Error (InternalError)
 }
 
-pub fn delete<T: Uid> (db: &Db, key: Option<T>) -> DeleteResult<T> {
-    match process_uid(key, |_, uid_bytes| db.remove(uid_bytes)) {
+pub fn delete<T: Uid> (tree: &Tree, key: Option<T>) -> DeleteResult<T> {
+    match process_uid(key, |_, uid_bytes| tree.remove(uid_bytes)) {
         Ok((uid, Some(_))) => DeleteResult::Success(uid),
         Ok((uid, None)) => DeleteResult::NotFound(uid),
         Err(e) => DeleteResult::Error(e)
@@ -121,18 +121,18 @@ pub enum AddResult<T: Uid> {
     Error (InternalError)
 }
 
-pub fn add<T: Uid, U: ProstMessage> (db: &Db, key: Option<T>, value: Option<U>) -> AddResult<T> {
+pub fn add<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>, value: Option<U>) -> AddResult<T> {
     let res = || -> Result<AddResult<T>, InternalError> {
         let val = unwrap_field(value, "value")?;
         let value_bytes = val.to_bytes()?;
 
         let check_and_insert = |uid: &T, uid_bytes: &Vec<u8>| -> Result<_, ::sled::Error> {
-            let contains = db.contains_key(uid_bytes)?;
+            let contains = tree.contains_key(uid_bytes)?;
             if contains { 
                 Ok(AddResult::<T>::Exists(uid.clone()))
             }
             else {
-                let existing = db.insert(uid_bytes, value_bytes)?; 
+                let existing = tree.insert(uid_bytes, value_bytes)?; 
                 if existing.is_some() {
                     error!("Unexpected override of the value in store: '{}'", uid); 
                 }
