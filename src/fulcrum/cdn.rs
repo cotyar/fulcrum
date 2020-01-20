@@ -29,21 +29,15 @@ use internal_error::{*, Cause::*};
 type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
 
-#[derive(Debug)]
-pub struct Table {
-    pub db: Db,
-    pub tree: Tree
-}
 
-
-#[derive(Debug)]
-pub struct FulcrumServer {
+#[derive(Debug, Clone)]
+pub struct CdnServer {
     pub addr: SocketAddr,
-    pub db: Db
+    pub db: Tree
 }
 
 #[tonic::async_trait]
-impl CdnControl for FulcrumServer {
+impl CdnControl for CdnServer {
 
     #[instrument]
     async fn add(&self, request: Request<CdnAddRequest>) -> GrpcResult<CdnAddResponse> {
@@ -93,7 +87,7 @@ async fn send_response_msg (tx: &mut StreamValueStreamSender, resp: cdn_stream_v
 }
 
 #[tonic::async_trait]
-impl CdnQuery for FulcrumServer {
+impl CdnQuery for CdnServer {
 
     // #[instrument(level = "debug")]
     #[instrument]
@@ -139,7 +133,7 @@ impl CdnQuery for FulcrumServer {
         let (mut tx, rx) = mpsc::channel(4);
         let db = self.db.clone();
 
-        async fn get_kv(db: &Db, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
+        async fn get_kv(db: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
             match get::<CdnUid, CdnValue>(db, key) {
                 GetResult::Success(uid, v) => {
                     let msg = &v.message;

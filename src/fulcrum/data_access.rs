@@ -17,11 +17,22 @@ impl Eq for CdnUid {}
 impl ProstMessage for CdnUid {} 
 impl Uid for CdnUid {}
 
+impl Eq for Key {} 
+impl ProstMessage for Key {} 
+impl Uid for Key {} // TODO: Revise Key structure
+
 impl ProstMessage for CdnValue {}
+impl ProstMessage for Entry {}
 
 impl fmt::Display for CdnUid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Uid: {}", self.message)
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Key: {}, KeyUid: {:?}, KeyFamily: {:?}", self.key, self.uid, self.key_family)
     }
 }
 

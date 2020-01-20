@@ -25,75 +25,62 @@ use crate::pb::cdn_query_server::*;
 
 use internal_error::{*, Cause::*};
 
-use sled::Db;
+use sled::{Db, Tree};
 use data_tree_server::DataTree;
 
+#[derive(Debug, Clone)]
+pub struct DataTreeServer {
+    pub addr: SocketAddr,
+    pub db: Tree
+}
 
 type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
 
 #[tonic::async_trait]
-impl DataTree for FulcrumServer {
-    async fn add(&self, request: tonic::Request<super::AddRequest>,
-    ) -> Result<tonic::Response<super::AddResponse>, tonic::Status> {
+impl DataTree for DataTreeServer {
+    async fn add(&self, request: Request<AddRequest>) -> GrpcResult<AddResponse> {
         use AddResult::*;
-        type Resp = cdn_add_response::Resp;
+        type Resp = add_response::Resp;
 
         let r = request.into_inner();
-        debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
+        debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let res = match add(&self.db, r.uid, r.value) {
+        let res = match add(&self.db, r.key, r.value) {
             Success(uid) => Resp::Success(uid),
             Exists(uid) => Resp::Exists(uid), 
             Error(e) => Resp::Error(e)
         };
 
         Ok(Response::new(AddResponse { resp: Some(res) }))
+        // Err(tonic::Status::unimplemented("Not yet implemented"))
     }
-    async fn copy(
-        &self,
-        request: tonic::Request<super::CopyRequest>,
-    ) -> Result<tonic::Response<super::CopyResponse>, tonic::Status> {
+
+    async fn copy(&self, request: Request<CopyRequest>) -> GrpcResult<CopyResponse> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
-    async fn delete(
-        &self,
-        request: tonic::Request<super::DeleteRequest>,
-    ) -> Result<tonic::Response<super::DeleteResponse>, tonic::Status> {
+
+    async fn delete(&self, request: Request<DeleteRequest>) -> GrpcResult<DeleteResponse> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
-    async fn get(
-        &self,
-        request: tonic::Request<super::GetRequest>,
-    ) -> Result<tonic::Response<super::GetResponse>, tonic::Status> {
+
+    async fn get(&self, request: Request<GetRequest>) -> GrpcResult<GetResponse> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
-    async fn contains(
-        &self,
-        request: tonic::Request<super::ContainsRequest>,
-    ) -> Result<tonic::Response<super::ContainsResponse>, tonic::Status> {
+
+    async fn contains(&self, request: Request<ContainsRequest>) -> GrpcResult<ContainsResponse> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
+
     #[doc = "Server streaming response type for the SearchKeys method."]
-    type SearchKeysStream: Stream<Item = Result<super::SearchKeyResponse, tonic::Status>>
-        + Send
-        + Sync
-        + 'static;
-    async fn search_keys(
-        &self,
-        request: tonic::Request<super::GetRequest>,
-    ) -> Result<tonic::Response<Self::SearchKeysStream>, tonic::Status> {
+    type SearchKeysStream = mpsc::Receiver<Result<SearchKeyResponse, Status>>;
+    async fn search_keys(&self, request: Request<GetRequest>) -> GrpcResult<Self::SearchKeysStream> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
+    
     #[doc = "Server streaming response type for the SearchKeyValues method."]
-    type SearchKeyValuesStream: Stream<Item = Result<super::SearchKeyValueResponse, tonic::Status>>
-        + Send
-        + Sync
-        + 'static;
-    async fn search_key_values(
-        &self,
-        request: tonic::Request<super::GetRequest>,
-    ) -> Result<tonic::Response<Self::SearchKeyValuesStream>, tonic::Status> {
+    type SearchKeyValuesStream = mpsc::Receiver<Result<SearchKeyValueResponse, Status>>;
+    async fn search_key_values(&self, request: Request<GetRequest>) -> GrpcResult<Self::SearchKeyValuesStream> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 }

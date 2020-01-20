@@ -38,7 +38,8 @@ use data_access::*;
 mod cdn;
 use cdn::*;
 
-use sled::Db;
+mod data_tree;
+use data_tree::*;
 
 
 #[tokio::main]
@@ -57,16 +58,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = SledConfig::new().temporary(true);
     let db = config.open()?;
+    let cdn_tree = db.open_tree("cdn")?;
+    let data_tree = db.open_tree("data")?;
 
     for addr in &addrs {
         let addr = addr.parse()?;
         let tx = tx.clone();
 
-        let control_server = FulcrumServer { addr, db: db.clone() };
-        let query_server = FulcrumServer { addr, db: db.clone() };
+        let cdn_control_server = CdnServer { addr, db: cdn_tree.clone() };
+        let cdn_query_server = CdnServer { addr, db: cdn_tree.clone() };
+        let data_tree_server = DataTreeServer { addr, db: data_tree.clone() };
         let serve = Server::builder()
-            .add_service(pb::cdn_control_server::CdnControlServer::new(control_server))
-            .add_service(pb::cdn_query_server::CdnQueryServer::new(query_server))
+            .add_service(pb::cdn_control_server::CdnControlServer::new(cdn_control_server))
+            .add_service(pb::cdn_query_server::CdnQueryServer::new(cdn_query_server))
+            .add_service(pb::data_tree_server::DataTreeServer::new(data_tree_server))
             .serve(addr);
 
         tokio::spawn(async move {
