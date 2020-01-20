@@ -200,6 +200,7 @@ message Entry {
     string str    = 7;
     bytes  bytes  = 8; 
     CdnUid cdn    = 10;
+    CdnUid cdnStr = 11;
   }
 }
 
@@ -209,12 +210,11 @@ message AddRequest {
 }
 
 message AddResponse {
-  enum Result {
-    Success = 0;
-    Exists  = 1;
-    Error   = 2;
+  oneof Resp {
+    Key           success = 1;
+    Key           exists  = 2;
+    InternalError error   = 100;
   }
-  Result result = 1;
 }
 
 message DeleteRequest {
@@ -222,32 +222,27 @@ message DeleteRequest {
 }
 
 message DeleteResponse {
-  enum Result {
-    Success   = 0;
-    NotExist  = 1;
-    Error     = 2;
+  oneof Resp {
+    Key           success   = 1;
+    Key           notFound  = 2;
+    InternalError error     = 100;
   }
-  Result result = 1;
 }
 
 message CopyRequest {
-  message CopyRequestEntry {
-    string                    keyFrom = 1;
-    google.protobuf.Timestamp expiry  = 2; 
-    string                    keyTo   = 3;
-  }
-  string correlationId              = 1;
-  repeated CopyRequestEntry entries = 2;
+  Key                       keyFrom = 1;
+  google.protobuf.Timestamp expiry  = 2; 
+  Key                       keyTo   = 3;
+  // string correlationId              = 2;
 }
 
 message CopyResponse {
-  enum CopyResult {
-    SUCCESS             = 0;
-    FROM_KEY_NOT_FOUND  = 1;
-    TO_KEY_EXISTS       = 2;
-    FAILURE             = 3;
+  oneof Resp {
+    CopyRequest   success         = 1;
+    CopyRequest   fromKeyNotFound = 2;
+    CopyRequest   toKeyExists     = 3;
+    InternalError error           = 100;
   }
-  repeated CopyResult results = 1;
 }
 
 message GetRequest {
@@ -255,7 +250,11 @@ message GetRequest {
 }
 
 message GetResponse {
-  CdnValue value = 1;
+  oneof Resp {
+    Entry         success   = 1;
+    Key           notFound  = 2;
+    InternalError error     = 100;
+  }
 }
 
 message ContainsRequest {
@@ -263,24 +262,28 @@ message ContainsRequest {
 }
 
 message ContainsResponse {
-  bool result = 1;
+  oneof Resp {
+    bool          success = 1;
+    InternalError error   = 100;
+  }
 }
 
 message SearchRequest {
-  string keyPrefix      = 1;
-  uint32 pageSize       = 2;
-  uint32 page           = 3;
-  string correlationId  = 4;
+  string keyPrefix        = 1;
+  uint32 pageSize         = 2;
+  uint32 page             = 3;
+  string correlationId    = 4;
+  bool   includeKeyString = 5;
 }
 
 message SearchKeyResponse {
-  string key          = 1;
+  Key key             = 1;
   KvMetadata metadata = 3;
 }
 
 message SearchKeyValueResponse {
-  string key          = 1;
-  bytes  value        = 2;
+  Key        key      = 1;
+  Entry      value    = 2;
   KvMetadata metadata = 3;
 }
 
