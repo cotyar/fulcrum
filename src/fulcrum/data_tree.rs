@@ -46,14 +46,15 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let res = match add(&self.db, r.key, r.value) {
+        let key_uid = r.key.map(|k| k.uid).flatten();        
+        
+        let res = match add(&self.db, key_uid, r.value) {
             Success(uid) => Resp::Success(uid),
             Exists(uid) => Resp::Exists(uid), 
             Error(e) => Resp::Error(e)
         };
 
         Ok(Response::new(AddResponse { resp: Some(res) }))
-        // Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 
     async fn copy(&self, request: Request<CopyRequest>) -> GrpcResult<CopyResponse> {

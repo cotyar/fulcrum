@@ -11,15 +11,32 @@ use tracing::{debug, error, Level};
 use sled::{Db, Tree};
 
 pub trait ProstMessage : ::prost::Message + Default {}
-pub trait Uid : ProstMessage + Clone + fmt::Display {}
+pub trait Uid : ProstMessage + Clone + fmt::Display {
+    fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
+    fn from_key_bytes<B: Buf, T: Uid>(msg_bytes: B) -> Result<T, InternalError>;
+}
 
 impl Eq for CdnUid {} 
 impl ProstMessage for CdnUid {} 
-impl Uid for CdnUid {}
+impl Uid for CdnUid {
+    fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
+        self.to_bytes()
+    }
+    fn from_key_bytes<B: Buf, T: Uid>(msg_bytes: B) -> Result<T, InternalError> {
+        T::from_bytes(msg_bytes)
+    }
+}
 
-impl Eq for Key {} 
-impl ProstMessage for Key {} 
-impl Uid for Key {} // TODO: Revise Key structure
+impl Eq for KeyUid {} 
+impl ProstMessage for KeyUid {} 
+impl Uid for KeyUid {
+    fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
+        self.to_bytes()
+    }
+    fn from_key_bytes<B: Buf, T: Uid>(msg_bytes: B) -> Result<T, InternalError> {
+        T::from_bytes(msg_bytes)
+    }
+} // TODO: Revise Key structure
 
 impl ProstMessage for CdnValue {}
 impl ProstMessage for Entry {}
@@ -27,6 +44,12 @@ impl ProstMessage for Entry {}
 impl fmt::Display for CdnUid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Uid: {}", self.message)
+    }
+}
+
+impl fmt::Display for KeyUid {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "KeyUid: {:?}", self)
     }
 }
 
@@ -82,7 +105,7 @@ pub fn unwrap_field<T: ::prost::Message + Default>(msg: Option<T>, field_name: &
 
 pub fn process_uid<T: Uid, U> (r_uid: Option<T>, f: impl FnOnce(&T, &Vec<u8>) -> Result<U, ::sled::Error>) -> Result<(T, U), InternalError> {
     let uid = unwrap_field(r_uid, "uid")?;
-    let uid_bytes = uid.to_bytes()?;
+    let uid_bytes = uid.to_key_bytes()?;
 
     let old_value = f(&uid, &uid_bytes)
         .map_err(|e| InternalError { cause: Some(StorageError(e.to_string())) })?;

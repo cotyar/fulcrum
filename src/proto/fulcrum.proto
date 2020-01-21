@@ -191,7 +191,7 @@ message KvMetadata {
 }
 
 message Entry {
-  KeyUid keyUid = 1;
+  KeyUid keyUid   = 1;
   oneof message {
     int32  i32    = 2;
     int64  i64    = 3;
@@ -211,8 +211,8 @@ message AddRequest {
 
 message AddResponse {
   oneof Resp {
-    Key           success = 1;
-    Key           exists  = 2;
+    KeyUid        success = 1;
+    KeyUid        exists  = 2;
     InternalError error   = 100;
   }
 }
@@ -223,16 +223,16 @@ message DeleteRequest {
 
 message DeleteResponse {
   oneof Resp {
-    Key           success   = 1;
-    Key           notFound  = 2;
+    KeyUid        success   = 1;
+    KeyUid        notFound  = 2;
     InternalError error     = 100;
   }
 }
 
 message CopyRequest {
-  Key                       keyFrom = 1;
+  KeyUid                    keyFrom = 1;
   google.protobuf.Timestamp expiry  = 2; 
-  Key                       keyTo   = 3;
+  KeyUid                    keyTo   = 3;
   // string correlationId              = 2;
 }
 
@@ -277,7 +277,7 @@ message SearchRequest {
 }
 
 message SearchKeyResponse {
-  Key key             = 1;
+  Key        key      = 1;
   KvMetadata metadata = 3;
 }
 
