@@ -20,18 +20,16 @@ use tonic::{transport::Server, Request, Response, Status /*, Streaming*/};
 
 use crate::data_access::*;
 use crate::pb::*;
-use crate::pb::cdn_control_server::*;
-use crate::pb::cdn_query_server::*;
 
 use internal_error::{*, Cause::*};
 
-use sled::{Db, Tree};
+use sled::{Tree};
 use data_tree_server::DataTree;
 
 #[derive(Debug, Clone)]
 pub struct DataTreeServer {
     pub addr: SocketAddr,
-    pub db: Tree
+    pub tree: Tree
 }
 
 type GrpcResult<T> = Result<Response<T>, Status>;
@@ -48,7 +46,7 @@ impl DataTree for DataTreeServer {
         
         let key_uid = r.key.map(|k| k.uid).flatten();        
         
-        let res = match add(&self.db, key_uid, r.value) {
+        let res = match add(&self.tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
             Success(uid) => Resp::Success(uid),
             Exists(uid) => Resp::Exists(uid), 
             Error(e) => Resp::Error(e)

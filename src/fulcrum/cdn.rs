@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use prost::Message;
 use bytes::{Buf, IntoBuf};
 
-use sled::{Db, Tree};
+use sled::{Tree};
 
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status /*, Streaming*/};
@@ -33,7 +33,7 @@ type GrpcResult<T> = Result<Response<T>, Status>;
 #[derive(Debug, Clone)]
 pub struct CdnServer {
     pub addr: SocketAddr,
-    pub db: Tree
+    pub tree: Tree
 }
 
 #[tonic::async_trait]
@@ -47,7 +47,7 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
         
-        let res = match add(&self.db, r.uid, r.value) {
+        let res = match add(&self.tree, r.uid, r.value) {
             Success(uid) => Resp::Success(uid),
             Exists(uid) => Resp::Exists(uid), 
             Error(e) => Resp::Error(e)
@@ -63,7 +63,7 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match delete(&self.db, r.uid) {
+        let res = match delete(&self.tree, r.uid) {
             Success(uid) => Resp::Success(uid),
             NotFound(uid) => Resp::NotFound(uid), 
             Error(e) => Resp::Error(e)
@@ -98,7 +98,7 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
-        let res = match get(&self.db, r.uid) {
+        let res = match get(&self.tree, r.uid) {
             Success(uid, v) => Resp::Success(v),
             NotFound(uid) => Resp::NotFound(uid), 
             Error(e) => Resp::Error(e)
@@ -112,7 +112,7 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
 
-        let res = match contains_key(&self.db, r.uid) {
+        let res = match contains_key(&self.tree, r.uid) {
             Ok(v) => cdn_contains_response::Resp::Success(v),
             Err(e) => cdn_contains_response::Resp::Error(e)
         };
@@ -131,10 +131,10 @@ impl CdnQuery for CdnServer {
         let key = r.uid.clone();
 
         let (mut tx, rx) = mpsc::channel(4);
-        let db = self.db.clone();
+        let tree = self.tree.clone();
 
-        async fn get_kv(db: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
-            match get::<CdnUid, CdnValue>(db, key) {
+        async fn get_kv(tree: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
+            match get::<CdnUid, CdnValue>(tree, key) {
                 GetResult::Success(uid, v) => {
                     let msg = &v.message;
                     match msg {
@@ -173,7 +173,7 @@ impl CdnQuery for CdnServer {
             while 
                 match remaining_keys.pop_front() { 
                     Some (next_key) => {
-                        let keys = get_kv(&db, &mut tx, next_key).await;
+                        let keys = get_kv(&tree, &mut tx, next_key).await;
                         for k in keys {
                             if !seen.contains(&k.message) {
                                 seen.insert(k.message.clone());

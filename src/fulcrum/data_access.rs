@@ -8,7 +8,7 @@ use internal_error::{*, Cause::*};
 
 use tracing::{debug, error, Level};
 
-use sled::{Db, Tree};
+use sled::{Tree};
 
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : ProstMessage + Clone + fmt::Display {

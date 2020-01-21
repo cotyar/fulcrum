@@ -65,9 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let addr = addr.parse()?;
         let tx = tx.clone();
 
-        let cdn_control_server = CdnServer { addr, db: cdn_tree.clone() };
-        let cdn_query_server = CdnServer { addr, db: cdn_tree.clone() };
-        let data_tree_server = DataTreeServer { addr, db: data_tree.clone() };
+        let cdn_control_server = CdnServer { addr, tree: cdn_tree.clone() };
+        let cdn_query_server = CdnServer { addr, tree: cdn_tree.clone() };
+        let data_tree_server = DataTreeServer { addr, tree: data_tree.clone() };
         let serve = Server::builder()
             .add_service(pb::cdn_control_server::CdnControlServer::new(cdn_control_server))
             .add_service(pb::cdn_query_server::CdnQueryServer::new(cdn_query_server))
