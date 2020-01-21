@@ -25,11 +25,18 @@ use internal_error::{*, Cause::*};
 
 use sled::{Tree};
 use data_tree_server::DataTree;
+use crate::data_tree::KeyColumn::*;
+
+#[derive(Debug, Clone)]
+pub enum KeyColumn {
+    SimpleKeyColumn(Tree),
+    // IndexedKeyColumn { uid_tree: Tree, index_tree: Tree } 
+}
 
 #[derive(Debug, Clone)]
 pub struct DataTreeServer {
     pub addr: SocketAddr,
-    pub tree: Tree
+    pub tree: KeyColumn
 }
 
 type GrpcResult<T> = Result<Response<T>, Status>;
@@ -46,17 +53,56 @@ impl DataTree for DataTreeServer {
         
         let key_uid = r.key.map(|k| k.uid).flatten();        
         
-        let res = match add(&self.tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
-            Success(uid) => Resp::Success(uid),
-            Exists(uid) => Resp::Exists(uid), 
-            Error(e) => Resp::Error(e)
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => 
+                match add(&tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
+                    Success(uid) => Resp::Success(uid),
+                    Exists(uid) => Resp::Exists(uid), 
+                    Error(e) => Resp::Error(e)
+                },
+            // IndexedKeyColumn { uid_tree, index_tree }  => {
+            //     let key = r.key.map(|k| k.key).flatten();
+            //     match add(&uid_tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
+            //         Success(uid) => {
+            //             match add(&index_tree, key, r.value) { // TODO: Add override flag and/or "return previous"
+            //                 Success(uid) => Resp::Success(uid),
+            //                 Exists(uid) => Resp::Exists(uid), 
+            //                 Error(e) => Resp::Error(e)
+            //             }                        
+            //         },
+            //         Exists(uid) => Resp::Exists(uid), 
+            //         Error(e) => Resp::Error(e)
+            //     }
+            // }
         };
 
         Ok(Response::new(AddResponse { resp: Some(res) }))
     }
 
     async fn copy(&self, request: Request<CopyRequest>) -> GrpcResult<CopyResponse> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        type Resp = copy_response::Resp;
+
+        let r = request.into_inner();
+        debug!("Copy Received: from_key '{:?}' to_key: '{:?}' (from {})", r.key_from, r.key_to, self.addr); // TODO: Fix tracing and remove
+        
+        let r_for_resp = r.clone(); 
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => 
+                match get::<_, Entry>(&tree, r.key_from) {
+                    GetResult::Success(_uid, v) => {
+                        match add(&tree, r.key_to, Some(v)) { // TODO: Add override flag and/or "return previous"
+                            AddResult::Success(_uid) => Resp::Success(r_for_resp),
+                            AddResult::Exists(_uid) => Resp::ToKeyExists(r_for_resp), 
+                            AddResult::Error(e) => Resp::Error(e)
+                        }      
+                    },
+                    GetResult::NotFound(_uid) => Resp::FromKeyNotFound(r_for_resp), 
+                    GetResult::Error(e) => Resp::Error(e)
+                }
+        };
+
+        debug!("Copy Response: '{:?}'", res); 
+        Ok(Response::new(CopyResponse { resp: Some(res) }))
     }
 
     async fn delete(&self, request: Request<DeleteRequest>) -> GrpcResult<DeleteResponse> {
@@ -66,10 +112,13 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match delete(&self.tree, r.uid) {
-            Success(uid) => Resp::Success(uid),
-            NotFound(uid) => Resp::NotFound(uid), 
-            Error(e) => Resp::Error(e)
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => 
+                match delete(&tree, r.uid) {
+                    Success(uid) => Resp::Success(uid),
+                    NotFound(uid) => Resp::NotFound(uid), 
+                    Error(e) => Resp::Error(e)
+                }
         };
 
         Ok(Response::new(DeleteResponse { resp: Some(res) }))
@@ -82,10 +131,13 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
-        let res = match get(&self.tree, r.uid) {
-            Success(uid, v) => Resp::Success(v),
-            NotFound(uid) => Resp::NotFound(uid), 
-            Error(e) => Resp::Error(e)
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => 
+                match get(&tree, r.uid) {
+                    Success(uid, v) => Resp::Success(v),
+                    NotFound(uid) => Resp::NotFound(uid), 
+                    Error(e) => Resp::Error(e)
+                }
         };
 
         debug!("Get Response: '{:?}'", res); 
@@ -96,23 +148,20 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
 
-        let res = match contains_key(&self.tree, r.uid) {
-            Ok(v) => contains_response::Resp::Success(v),
-            Err(e) => contains_response::Resp::Error(e)
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => 
+                match contains_key(&tree, r.uid) {
+                    Ok(v) => contains_response::Resp::Success(v),
+                    Err(e) => contains_response::Resp::Error(e)
+                }
         };
 
         Ok(Response::new(ContainsResponse { resp: Some(res) }))
     }
 
     #[doc = "Server streaming response type for the SearchKeys method."]
-    type SearchKeysStream = mpsc::Receiver<Result<SearchKeyResponse, Status>>;
-    async fn search_keys(&self, request: Request<GetRequest>) -> GrpcResult<Self::SearchKeysStream> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
-    }
-    
-    #[doc = "Server streaming response type for the SearchKeyValues method."]
-    type SearchKeyValuesStream = mpsc::Receiver<Result<SearchKeyValueResponse, Status>>;
-    async fn search_key_values(&self, request: Request<GetRequest>) -> GrpcResult<Self::SearchKeyValuesStream> {
+    type SearchStream = mpsc::Receiver<Result<SearchResponse, Status>>;
+    async fn search(&self, request: Request<SearchRequest>) -> GrpcResult<Self::SearchStream> {
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 }

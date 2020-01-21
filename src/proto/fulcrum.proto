@@ -272,16 +272,12 @@ message SearchRequest {
   string keyPrefix        = 1;
   uint32 pageSize         = 2;
   uint32 page             = 3;
-  string correlationId    = 4;
-  bool   includeKeyString = 5;
+  bool   includeFullKey   = 4;
+  bool   includeValue     = 5;
+  // string correlationId    = 50;
 }
 
-message SearchKeyResponse {
-  Key        key      = 1;
-  KvMetadata metadata = 3;
-}
-
-message SearchKeyValueResponse {
+message SearchResponse {
   Key        key      = 1;
   Entry      value    = 2;
   KvMetadata metadata = 3;
@@ -302,6 +298,5 @@ service DataTree {
 
   rpc Get(GetRequest) returns (GetResponse) {}
   rpc Contains(ContainsRequest) returns (ContainsResponse) {}
-  rpc SearchKeys(GetRequest) returns (stream SearchKeyResponse) {}
-  rpc SearchKeyValues(GetRequest) returns (stream SearchKeyValueResponse) {}
+  rpc Search(SearchRequest) returns (stream SearchResponse) {}
 }
