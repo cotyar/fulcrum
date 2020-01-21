@@ -252,7 +252,7 @@ message GetRequest {
 message GetResponse {
   oneof Resp {
     Entry         success   = 1;
-    Key           notFound  = 2;
+    KeyUid        notFound  = 2;
     InternalError error     = 100;
   }
 }

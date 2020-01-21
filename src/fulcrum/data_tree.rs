@@ -60,15 +60,48 @@ impl DataTree for DataTreeServer {
     }
 
     async fn delete(&self, request: Request<DeleteRequest>) -> GrpcResult<DeleteResponse> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        use DeleteResult::*;
+        type Resp = delete_response::Resp;
+
+        let r = request.into_inner();
+        debug!("'{:?}' (from {})", r.uid, self.addr);
+        
+        let res = match delete(&self.tree, r.uid) {
+            Success(uid) => Resp::Success(uid),
+            NotFound(uid) => Resp::NotFound(uid), 
+            Error(e) => Resp::Error(e)
+        };
+
+        Ok(Response::new(DeleteResponse { resp: Some(res) }))
     }
 
     async fn get(&self, request: Request<GetRequest>) -> GrpcResult<GetResponse> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        use GetResult::*;
+        type Resp = get_response::Resp;
+
+        let r = request.into_inner();
+        debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
+        
+        let res = match get(&self.tree, r.uid) {
+            Success(uid, v) => Resp::Success(v),
+            NotFound(uid) => Resp::NotFound(uid), 
+            Error(e) => Resp::Error(e)
+        };
+
+        debug!("Get Response: '{:?}'", res); 
+        Ok(Response::new(GetResponse { resp: Some(res) }))
     }
 
     async fn contains(&self, request: Request<ContainsRequest>) -> GrpcResult<ContainsResponse> {
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        let r = request.into_inner();
+        debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
+
+        let res = match contains_key(&self.tree, r.uid) {
+            Ok(v) => contains_response::Resp::Success(v),
+            Err(e) => contains_response::Resp::Error(e)
+        };
+
+        Ok(Response::new(ContainsResponse { resp: Some(res) }))
     }
 
     #[doc = "Server streaming response type for the SearchKeys method."]
