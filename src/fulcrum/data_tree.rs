@@ -162,6 +162,9 @@ impl DataTree for DataTreeServer {
     #[doc = "Server streaming response type for the SearchKeys method."]
     type SearchStream = mpsc::Receiver<Result<SearchResponse, Status>>;
     async fn search(&self, request: Request<SearchRequest>) -> GrpcResult<Self::SearchStream> {
+        let r = request.into_inner();
+        debug!("Search Received: '{:?}' (from {})", r, self.addr);
+
         Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 }
