@@ -25,14 +25,14 @@ use sled::{Tree};
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
-    fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError>;
+    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<Self, InternalError>;
 }
 
 impl Uid for u64 {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
         Ok(self.to_be_bytes().to_vec())
     }
-    fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<u64, InternalError> {
+    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<u64, InternalError> {
         Ok(msg_bytes.get_u64())
     }
 }
@@ -54,7 +54,7 @@ impl Uid for KeyVec {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
         Ok(self.0.clone())
     }
-    fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<KeyVec, InternalError> {
+    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<KeyVec, InternalError> {
         Ok(KeyVec(msg_bytes.bytes().iter().cloned().collect()))
     }
 }
@@ -198,7 +198,7 @@ pub enum PageResult<U: 'static + ProstMessage> {
 
 #[async_trait]
 pub trait Pager where Self: Uid {
-    async fn get_page_by_prefix<U: ProstMessage + Clone, TErr, F> 
+    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr, F> 
     (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
         f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError>;
@@ -206,7 +206,7 @@ pub trait Pager where Self: Uid {
 
 #[async_trait]
 impl<T: Uid> Pager for T {
-    async fn get_page_by_prefix<U: ProstMessage + Clone, TErr, F> 
+    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr, F> 
         (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
             f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
             -> Result<Receiver<PageResult<U>>, InternalError>
@@ -217,9 +217,9 @@ impl<T: Uid> Pager for T {
         let tree1 = tree.clone();
 
         //#[instrument]
-        let send_response_msg = |tx: &mut Sender<_>, msg: &U| async {
+        let send_response_msg = |tx: &mut Sender<_>, msg: PageResult<U>| async {
             // debug!("StreamValueStream sending: {:?}", &msg);
-            match tx.send(msg.clone()).await {
+            match tx.send(msg).await {
                 Ok(()) => (),
                 Err(e) => error!("Value message transfer failed with: {}", e)
             };
@@ -235,7 +235,7 @@ impl<T: Uid> Pager for T {
                         match next_v {
                             Some(Ok(k)) => {
                                 let v = f(k);
-                                //send_response_msg(&mut tx, PageResult::Success(v)).await;
+                                send_response_msg(&mut tx, PageResult::Success(v)).await;
                             },
                             Some(Err(e)) => {
                                 //tx.send(PageResult::KeyError(to_internal_error(e.clone()))).await;
