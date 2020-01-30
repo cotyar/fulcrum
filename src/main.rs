@@ -2,13 +2,13 @@
 #[macro_use]
 
 extern crate sled;
-extern crate raft;
+//extern crate raft;
 
 extern crate log;
 
 extern crate tonic;
 
-use crate::raft_cluster::raft_cluster_main;
+//use crate::raft_cluster::raft_cluster_main;
 use sled::{Config as SledConfig, Result};
 // use raft::{
 //     Config,
@@ -16,7 +16,7 @@ use sled::{Config as SledConfig, Result};
 //     raw_node::RawNode,
 // };
 
-mod raft_cluster;
+//mod raft_cluster;
 
 // use raft_cluster;
 
@@ -116,7 +116,7 @@ fn merge_operator() -> Result<()> {
 fn main() -> Result<()> {
     // let t: Vec<i32> = (1..6).collect();
     // println!("{:?}", t);
-    raft_cluster_main();
+    //raft_cluster_main();
 
     basic()?;
     merge_operator()?;

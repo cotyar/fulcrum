@@ -274,6 +274,7 @@ message SearchRequest {
   uint32 page             = 3;
   bool   includeFullKey   = 4;
   bool   includeValue     = 5;
+  
   // string correlationId    = 50;
 }
 

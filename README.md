@@ -47,3 +47,4 @@ Staying on shoulders of Giants:
 - [ ] Value compression
 - [ ] Value encryption
 - [ ] *SQL*
+- [ ] *WebAssembly*-based stored procedures

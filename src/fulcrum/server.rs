@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 
 use prost::Message;
 use sled::{Config as SledConfig};
-use bytes::{Buf, IntoBuf};
+use bytes::{Buf};
 
 // use futures::Stream;
 use std::fmt;

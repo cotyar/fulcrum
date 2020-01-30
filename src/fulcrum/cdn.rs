@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 
 use prost::Message;
-use bytes::{Buf, IntoBuf};
+use bytes::{Buf};
 
 use sled::{Tree};
 
@@ -128,7 +128,7 @@ impl CdnQuery for CdnServer {
         let message = format!("'{:?}' (from {})", r.uid, self.addr);
         println!("StreamValueStream Received: {}", message);
 
-        let key = r.uid.clone();
+        let key = r.uid;
 
         let (mut tx, rx) = mpsc::channel(4);
         let tree = self.tree.clone();

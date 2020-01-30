@@ -1,10 +1,19 @@
+#![warn(dead_code)]
+#![warn(unused_imports)]
+
 use core::mem::size_of;
 use core::future::Future;
 use tokio::sync::{mpsc, mpsc::*};
 use std::fmt;
+use std::sync::Arc;
+use std::thread;
+use crossbeam_epoch::{self as epoch, Atomic, Owned};
 
-use bytes::{Buf, IntoBuf};
 
+use bytes::{Bytes, Buf};
+
+extern crate async_trait;
+use async_trait::async_trait;
 
 use crate::pb::*;
 use internal_error::{*, Cause::*};
@@ -14,7 +23,7 @@ use tracing::{debug, error, Level};
 use sled::{Tree};
 
 pub trait ProstMessage : ::prost::Message + Default {}
-pub trait Uid : Clone + fmt::Display {
+pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
     fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError>;
 }
@@ -24,7 +33,7 @@ impl Uid for u64 {
         Ok(self.to_be_bytes().to_vec())
     }
     fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<u64, InternalError> {
-        Ok(msg_bytes.take(size_of::<u64>()).get_u64_be())
+        Ok(msg_bytes.get_u64())
     }
 }
 
@@ -38,7 +47,6 @@ impl Uid for String {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct KeyVec(Vec<u8>);
 
@@ -47,7 +55,7 @@ impl Uid for KeyVec {
         Ok(self.0.clone())
     }
     fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<KeyVec, InternalError> {
-        Ok(KeyVec(msg_bytes.iter().collect()))
+        Ok(KeyVec(msg_bytes.bytes().iter().cloned().collect()))
     }
 }
 
@@ -99,6 +107,7 @@ impl fmt::Display for KeyVec {
         write!(f, "{:?}", self.0)
     }
 }
+
 
 // impl Hash for CdnValue {
 //     fn hash_slice<H: Hasher>(data: &[Self], state: &mut H)
@@ -165,7 +174,8 @@ pub enum GetResult<T: Uid, U: ProstMessage> {
 pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T, U> {
     match process_uid(key, |_, uid_bytes| tree.get(uid_bytes)) {
         Ok((uid, Some(v_bytes))) => {
-            match U::from_bytes(v_bytes.into_buf()) {
+            let bts: Vec<u8> = v_bytes.iter().cloned().collect();
+            match U::from_bytes(Bytes::from(bts)) {
                 Ok(v) => GetResult::Success(uid, v),
                 Err(e) => GetResult::Error(e),
             }
@@ -180,38 +190,55 @@ pub fn contains_key<T: Uid + Default> (tree: &Tree, key: Option<T>) -> Result<bo
 }
 
 #[derive(Debug)]
-pub enum PageResult<U: ProstMessage> {
+pub enum PageResult<U: 'static + ProstMessage> {
     Success (U),
     KeyError (InternalError),
     ValueError (InternalError)
 }
-//#[instrument]
-async fn send_response_msg<T: std::fmt::Debug> (tx: &mut Sender<T>, msg: T) {
-    debug!("StreamValueStream sending: {:?}", &msg);
-    match tx.send(msg).await {
-        Ok(()) => (),
-        Err(e) => error!("Value message transfer failed with: {}", e)
-    }
-}
-pub async fn get_page_by_prefix<T: Uid, U: ProstMessage, TErr, F> 
-    (tree: Tree, buffer_size: usize, include_values: bool, key: Option<T>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-         -> Result<Receiver<PageResult<U>>, InternalError> 
-         where F: Fn(sled::IVec) -> U {
 
-    match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
-        Ok((uid, uid_bytes)) => { //match iter {
-            // Ok((key_iter, value_iter)) => {
-                // let value_iter = &iter.values();
-                let (mut tx, rx) = mpsc::channel(buffer_size);
+#[async_trait]
+pub trait Pager where Self: Uid {
+    async fn get_page_by_prefix<U: ProstMessage + Clone, TErr, F> 
+    (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+         -> Result<Receiver<PageResult<U>>, InternalError>;
+}
+
+#[async_trait]
+impl<T: Uid> Pager for T {
+    async fn get_page_by_prefix<U: ProstMessage + Clone, TErr, F> 
+        (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+            f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+            -> Result<Receiver<PageResult<U>>, InternalError>
+            {
+        //let f2 = f;
+        // let (mut tx, rx) = mpsc::channel(buffer_size);
+        let (mut tx, rx) = mpsc::channel(4);
+        let tree1 = tree.clone();
+
+        //#[instrument]
+        let send_response_msg = |tx: &mut Sender<_>, msg: &U| async {
+            // debug!("StreamValueStream sending: {:?}", &msg);
+            match tx.send(msg.clone()).await {
+                Ok(()) => (),
+                Err(e) => error!("Value message transfer failed with: {}", e)
+            };
+        };
+        match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
+            Ok((uid, uid_bytes)) => { 
                 tokio::spawn(async move {
-                    let iter = tree.scan_prefix(uid_bytes);
-                    let key_iter = &mut iter.keys();
-                    // let value_iter = &mut iter.values();    
+                    // let mut iter = Arc::new(tree1.scan_prefix(uid_bytes));
+                    let mut iter = tree1.scan_prefix(uid_bytes);
 
                     for kv in 0..(page_size.unwrap_or(default_page_size)) {
-                        match key_iter.next() {
-                            Some(Ok(k)) => (), //send_response_msg(&mut tx, PageResult::Success(f(k))).await,
+                        let next_v = &iter.into_iter().next();
+                        match next_v {
+                            Some(Ok(k)) => {
+                                let v = f(k);
+                                //send_response_msg(&mut tx, PageResult::Success(v)).await;
+                            },
                             Some(Err(e)) => {
+                                //tx.send(PageResult::KeyError(to_internal_error(e.clone()))).await;
                                 // send_response_msg(&mut tx, PageResult::KeyError(to_internal_error(e))).await;
                                 break;
                             },
@@ -220,34 +247,35 @@ pub async fn get_page_by_prefix<T: Uid, U: ProstMessage, TErr, F>
                     }
                 });
 
+                // let r: std::pin::Pin<Box<std::future::Future<Output = _>>> = Box::pin(Ok(rx));
+                // r
                 Ok(rx)
-            // },
-            // Err(e) => InternalError { cause: Some(StorageError(e.to_string())) }
-        },
-        Err(e) => Err(e)
+            },
+            Err(e) => Err(e)
+        }
     }
 }
 
-pub async fn get_page_by_prefix_u64<U: ProstMessage, TErr, F>
-    (tree: Tree, buffer_size: usize, include_values: bool, key: Option<u64>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-         -> Result<Receiver<PageResult<U>>, InternalError> 
-         where F: Fn(sled::IVec) -> U {
-    get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, include_values, key, page, page_size, default_page_size, f).await
-}
+// pub async fn get_page_by_prefix_u64<U: ProstMessage, TErr, F>
+//     (tree: Tree, buffer_size: usize, key: Option<u64>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
+//          -> Result<Receiver<PageResult<U>>, InternalError> 
+//          where F: Fn((sled::IVec, sled::IVec)) -> U {
+//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
+// }
 
-pub async fn get_page_by_prefix_str<U: ProstMessage, TErr, F>
-    (tree: Tree, buffer_size: usize, include_values: bool, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-         -> Result<Receiver<PageResult<U>>, InternalError> 
-         where F: Fn(sled::IVec) -> U {
-    get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, include_values, key, page, page_size, default_page_size, f).await
-}
+// pub async fn get_page_by_prefix_str<U: ProstMessage, TErr, F>
+//     (tree: Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
+//          -> Result<Receiver<PageResult<U>>, InternalError> 
+//          where F: Fn((sled::IVec, sled::IVec)) -> U {
+//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
+// }
 
-pub async fn get_page_by_prefix_bytes<U: ProstMessage, TErr, F>
-    (tree: Tree, buffer_size: usize, include_values: bool, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-         -> Result<Receiver<PageResult<U>>, InternalError> 
-         where F: Fn(sled::IVec) -> U {
-    get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, include_values, key, page, page_size, default_page_size, f).await
-}
+// pub async fn get_page_by_prefix_bytes<U: ProstMessage, TErr, F>
+//     (tree: Tree, buffer_size: usize, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
+//          -> Result<Receiver<PageResult<U>>, InternalError> 
+//          where F: Fn((sled::IVec, sled::IVec)) -> U {
+//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
+// }
 
 #[derive(Debug)]
 pub enum DeleteResult<T: Uid> {
