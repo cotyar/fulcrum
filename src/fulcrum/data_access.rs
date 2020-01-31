@@ -213,8 +213,19 @@ impl<T: Uid> Pager for T {
             {
         //let f2 = f;
         // let (mut tx, rx) = mpsc::channel(buffer_size);
-        let (mut tx, rx) = mpsc::channel(4);
+        let (mut tx, rx) = mpsc::channel::<PageResult<U>>(4);
+        let (mut txi, rxi) = std::sync::mpsc::channel::<PageResult<U>>();
         let tree1 = tree.clone();
+        
+        tokio::spawn(async move { // TODO: Find easier way around Guard.Local in the iter
+            loop {
+                let next = rxi.recv();
+                match next {
+                    Ok(v) => tx.send(v).await.expect("Channel error"), //(|e| error!("Channel error: {:?}", e)),
+                    Err(e) => break
+                }
+            }
+        });
 
         //#[instrument]
         // let send_response_msg = |tx: &mut Sender<PageResult<U>>, msg: PageResult<U>| async move {
@@ -226,20 +237,33 @@ impl<T: Uid> Pager for T {
         //     ()
         // };
         match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
-            Ok((uid, uid_bytes)) => { 
+            Ok((_uid, uid_bytes)) => { 
                 tokio::spawn(async move {
                     // let mut iter = Arc::new(tree1.scan_prefix(uid_bytes));
                     let mut iter = tree1.scan_prefix(uid_bytes);
 
-                    for kv in 0..(page_size.unwrap_or(default_page_size)) {
+                    for _ in 0..(page_size.unwrap_or(default_page_size)) {
                         let next_v = &iter.next();
                         match next_v {
                             Some(Ok(k)) => {
                                 let v = f(k);
+                                txi.send(PageResult::Success(v)).expect("");
+                                // match tx.poll_ready() {
+                                //     Ok(_) => { let _ = tx.try_send(PageResult::Success(v)); },
+                                //     Err(_) => {
+                                //         info!("Connection closed");
+                                //         break;
+                                //     }
+                                // }
+                                
+                                // match tx.send(PageResult::Success(v)).await {
+                                //     Ok(()) => (),
+                                //     Err(e) => error!("Value message transfer failed with: {}", e)
+                                // };
                                 //send_response_msg(&mut tx, PageResult::Success(v)).await;
                             },
                             Some(Err(e)) => {
-                                //tx.send(PageResult::KeyError(to_internal_error(e.clone()))).await;
+                                txi.send(PageResult::KeyError(to_internal_error(e.clone()))).expect("");
                                 // send_response_msg(&mut tx, PageResult::KeyError(to_internal_error(e))).await;
                                 break;
                             },
