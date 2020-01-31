@@ -217,13 +217,14 @@ impl<T: Uid> Pager for T {
         let tree1 = tree.clone();
 
         //#[instrument]
-        let send_response_msg = |tx: &mut Sender<_>, msg: PageResult<U>| async {
-            // debug!("StreamValueStream sending: {:?}", &msg);
-            match tx.send(msg).await {
-                Ok(()) => (),
-                Err(e) => error!("Value message transfer failed with: {}", e)
-            };
-        };
+        // let send_response_msg = |tx: &mut Sender<PageResult<U>>, msg: PageResult<U>| async move {
+        //     // debug!("StreamValueStream sending: {:?}", &msg);
+        //     match tx.send(msg).await {
+        //         Ok(()) => (),
+        //         Err(e) => error!("Value message transfer failed with: {}", e)
+        //     };
+        //     ()
+        // };
         match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
             Ok((uid, uid_bytes)) => { 
                 tokio::spawn(async move {
@@ -231,11 +232,11 @@ impl<T: Uid> Pager for T {
                     let mut iter = tree1.scan_prefix(uid_bytes);
 
                     for kv in 0..(page_size.unwrap_or(default_page_size)) {
-                        let next_v = &iter.into_iter().next();
+                        let next_v = &iter.next();
                         match next_v {
                             Some(Ok(k)) => {
                                 let v = f(k);
-                                send_response_msg(&mut tx, PageResult::Success(v)).await;
+                                //send_response_msg(&mut tx, PageResult::Success(v)).await;
                             },
                             Some(Err(e)) => {
                                 //tx.send(PageResult::KeyError(to_internal_error(e.clone()))).await;
