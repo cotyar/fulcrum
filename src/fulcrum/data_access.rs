@@ -198,15 +198,15 @@ pub enum PageResult<U: 'static + ProstMessage> {
 
 #[async_trait]
 pub trait Pager where Self: Uid {
-    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr, F> 
-    (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
-         -> Result<Receiver<PageResult<U>>, InternalError>;
+    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr> 
+        (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+            f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+            -> Result<Receiver<PageResult<U>>, InternalError>;
 }
 
 #[async_trait]
 impl<T: Uid> Pager for T {
-    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr, F> 
+    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr> 
         (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
             f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
             -> Result<Receiver<PageResult<U>>, InternalError>
@@ -281,26 +281,27 @@ impl<T: Uid> Pager for T {
     }
 }
 
-// pub async fn get_page_by_prefix_u64<U: ProstMessage, TErr, F>
-//     (tree: Tree, buffer_size: usize, key: Option<u64>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-//          -> Result<Receiver<PageResult<U>>, InternalError> 
-//          where F: Fn((sled::IVec, sled::IVec)) -> U {
-//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
-// }
+pub async fn get_page_by_prefix_u64<U: ProstMessage + Clone + 'static, TErr, F>
+    (tree: Tree, buffer_size: usize, key: u64, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+         -> Result<Receiver<PageResult<U>>, InternalError> {
+    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, Some(key), page, page_size, default_page_size, f).await
+}
 
-// pub async fn get_page_by_prefix_str<U: ProstMessage, TErr, F>
-//     (tree: Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-//          -> Result<Receiver<PageResult<U>>, InternalError> 
-//          where F: Fn((sled::IVec, sled::IVec)) -> U {
-//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
-// }
+pub async fn get_page_by_prefix_str<U: ProstMessage + Clone + 'static, TErr, F>
+    (tree: Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+         -> Result<Receiver<PageResult<U>>, InternalError> {
+    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, key, page, page_size, default_page_size, f).await
+}
 
-// pub async fn get_page_by_prefix_bytes<U: ProstMessage, TErr, F>
-//     (tree: Tree, buffer_size: usize, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, f: F)
-//          -> Result<Receiver<PageResult<U>>, InternalError> 
-//          where F: Fn((sled::IVec, sled::IVec)) -> U {
-//     get_page_by_prefix::<_, _, TErr, _>(tree, buffer_size, key, page, page_size, default_page_size, f).await
-// }
+pub async fn get_page_by_prefix_bytes<U: ProstMessage + Clone + 'static, TErr, F>
+    (tree: Tree, buffer_size: usize, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+         -> Result<Receiver<PageResult<U>>, InternalError> {
+    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, key, page, page_size, default_page_size, f).await
+}
+
 
 #[derive(Debug)]
 pub enum DeleteResult<T: Uid> {
