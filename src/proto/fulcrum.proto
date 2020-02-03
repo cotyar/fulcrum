@@ -278,10 +278,18 @@ message SearchRequest {
   // string correlationId    = 50;
 }
 
-message SearchResponse {
+message SearchResponseItem {
   Key        key      = 1;
   Entry      value    = 2;
   KvMetadata metadata = 3;
+}
+
+message SearchResponse {
+  oneof Resp {
+    SearchResponseItem success    = 1;
+    InternalError      keyError   = 100;
+    InternalError      valueError = 101;
+  }
 }
 
 // message StoreSearchPageResponse {

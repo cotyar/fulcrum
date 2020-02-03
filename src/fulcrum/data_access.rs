@@ -189,8 +189,8 @@ pub fn contains_key<T: Uid + Default> (tree: &Tree, key: Option<T>) -> Result<bo
     process_uid(key, |_, uid_bytes| tree.contains_key(uid_bytes)).map(|(_, v)| v)
 }
 
-#[derive(Debug)]
-pub enum PageResult<U: 'static + ProstMessage> {
+#[derive(Debug, Clone)]
+pub enum PageResult<U: 'static + Send> {
     Success (U),
     KeyError (InternalError),
     ValueError (InternalError)
@@ -198,48 +198,43 @@ pub enum PageResult<U: 'static + ProstMessage> {
 
 #[async_trait]
 pub trait Pager where Self: Uid {
-    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr> 
+    async fn get_page_by_prefix<U: Clone + Send + fmt::Debug +'static> 
         (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-            f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+            f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
             -> Result<Receiver<PageResult<U>>, InternalError>;
 }
 
 #[async_trait]
 impl<T: Uid> Pager for T {
-    async fn get_page_by_prefix<U: ProstMessage + Clone + 'static, TErr> 
+    async fn get_page_by_prefix<U: Clone + Send + fmt::Debug +'static> 
         (tree: &Tree, buffer_size: usize, key: Option<Self>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-            f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+            f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
             -> Result<Receiver<PageResult<U>>, InternalError>
             {
-        let (mut tx, rx) = mpsc::channel::<PageResult<U>>(100);
+        let (mut tx, rx) = mpsc::channel::<PageResult<U>>(buffer_size);
         let tree1 = tree.clone();
         
         match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
-            Ok((_uid, uid_bytes)) => { 
+            Ok((uid, uid_bytes)) => { 
+                debug!("Received Uid: {:?}", uid);
                 tokio::spawn(async move {
-                    let mut page_data: Vec<PageResult<U>> = Vec::with_capacity(page_size.unwrap_or(default_page_size) as usize);
-                    {
-                        let mut iter = tree1.scan_prefix(uid_bytes);
+                    let actual_page_size = page_size.unwrap_or(default_page_size) as usize;
+                    let to_skip = (page.unwrap_or(0) as usize) * actual_page_size;
+                    let page_data: Vec<PageResult<U>> = tree1.scan_prefix(uid_bytes).
+                        skip(to_skip).
+                        take(actual_page_size).
+                        map(|next_v| match next_v {
+                            Ok(k) => f(k),
+                            Err(e) => PageResult::KeyError(to_internal_error(e.clone()))
+                        }).
+                        collect();
 
-                        for _ in 0..(page_size.unwrap_or(default_page_size)) {
-                            let next_v = &iter.next();
-                            match next_v {
-                                Some(Ok(k)) => {
-                                    let v = f(k);
-                                    page_data.push(PageResult::Success(v));
-                                },
-                                Some(Err(e)) => {
-                                    page_data.push(PageResult::KeyError(to_internal_error(e.clone())));
-                                    break;
-                                },
-                                None => break
-                            }
-                        }
-                    }
+                    // debug!("Page: {:?}", uid.clone());
 
                     for pd in page_data {
+                        let bts = pd.clone();
                         match tx.send(pd).await {
-                            Ok(()) => (),
+                            Ok(()) => debug!("Sending key: {:?}", bts),// (),
                             Err(e) => error!("Value message transfer failed with: {}", e)
                         }
                     };
@@ -252,25 +247,25 @@ impl<T: Uid> Pager for T {
     }
 }
 
-pub async fn get_page_by_prefix_u64<U: ProstMessage + Clone + 'static, TErr, F>
-    (tree: Tree, buffer_size: usize, key: u64, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+pub async fn get_page_by_prefix_u64<U: Send + Clone + fmt::Debug + 'static>
+    (tree: &Tree, buffer_size: usize, key: u64, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError> {
-    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, Some(key), page, page_size, default_page_size, f).await
+    Pager::get_page_by_prefix(tree, buffer_size, Some(key), page, page_size, default_page_size, f).await
 }
 
-pub async fn get_page_by_prefix_str<U: ProstMessage + Clone + 'static, TErr, F>
-    (tree: Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+pub async fn get_page_by_prefix_str<U: Send + Clone + fmt::Debug + 'static>
+    (tree: &Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError> {
-    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, key, page, page_size, default_page_size, f).await
+    Pager::get_page_by_prefix(tree, buffer_size, key, page, page_size, default_page_size, f).await
 }
 
-pub async fn get_page_by_prefix_bytes<U: ProstMessage + Clone + 'static, TErr, F>
-    (tree: Tree, buffer_size: usize, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
-        f: Box<dyn for<'r> Fn(&'r (sled::IVec, sled::IVec)) -> U + Send>)
+pub async fn get_page_by_prefix_bytes<U: Send + Clone + fmt::Debug + 'static>
+    (tree: &Tree, buffer_size: usize, key: Option<KeyVec>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+        f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError> {
-    Pager::get_page_by_prefix::<U, TErr>(&tree, buffer_size, key, page, page_size, default_page_size, f).await
+    Pager::get_page_by_prefix(tree, buffer_size, key, page, page_size, default_page_size, f).await
 }
 
 

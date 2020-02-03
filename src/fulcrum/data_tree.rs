@@ -7,6 +7,8 @@ use tracing_attributes::instrument;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+use bytes::{Bytes, Buf, BufMut};
+
 use prost::Message;
 use sled::{Config as SledConfig};
 
@@ -15,6 +17,7 @@ use std::fmt;
 use std::net::SocketAddr;
 // use std::pin::Pin;
 use tokio::sync::mpsc;
+use tokio::stream::StreamExt;
 use tonic::{transport::Server, Request, Response, Status /*, Streaming*/};
 
 use crate::data_access::*;
@@ -162,8 +165,79 @@ impl DataTree for DataTreeServer {
     type SearchStream = mpsc::Receiver<Result<SearchResponse, Status>>;
     async fn search(&self, request: Request<SearchRequest>) -> GrpcResult<Self::SearchStream> {
         let r = request.into_inner();
+        type Resp = search_response::Resp;
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
-        Err(tonic::Status::unimplemented("Not yet implemented"))
+        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<String> + Send> = 
+            Box::new(|(k, v)| match Uid::from_key_bytes(&*k) {
+                Ok(key) => PageResult::Success(key),
+                Err(e) => PageResult::KeyError(e)
+            });
+
+        let res = match &self.tree { 
+            SimpleKeyColumn(tree) => {
+                get_page_by_prefix_str(tree, 100, Some(r.key_prefix), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await
+            }
+
+                // match contains_key(&tree, r.uid) {
+                //     Ok(v) => contains_response::Resp::Success(v),
+                //     Err(e) => contains_response::Resp::Error(e)
+                // }
+        };
+
+        match res {
+            Ok(rxi) => {
+                let (mut tx, rx) = mpsc::channel(100);
+                tokio::spawn(async move { 
+                    let mut rxx = rxi;
+                    loop {
+                        // rxi.map(|page_result| async move {
+                        //         match page_result {
+                        //             PageResult::Success::<_>(k) => {
+                        //                 let item = SearchResponseItem { key: Some(Key { key: k, key_family: None, uid: None }), value: None, metadata: None };
+                        //                 let resp = Resp::Success(item);
+                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
+                        //                 // SearchResponse { resp: Some(resp) }
+                        //             },
+                        //             PageResult::KeyError(e) => {
+                        //                 let resp = Resp::KeyError(e);
+                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
+                        //                 // SearchResponse { resp: Some(resp) }
+                        //             },
+                        //             PageResult::ValueError(e) => {
+                        //                 let resp = Resp::ValueError(e);
+                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
+                        //                 // SearchResponse { resp: Some(resp) }
+                        //             }
+                        //         }
+                        // } );
+                        let page_result = rxx.recv().await;
+                        match page_result {
+                            Some(PageResult::Success::<_>(k)) => {
+                                let item = SearchResponseItem { key: Some(Key { key: k, key_family: None, uid: None }), value: None, metadata: None };
+                                let resp = Resp::Success(item);
+                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
+                                // SearchResponse { resp: Some(resp) }
+                            },
+                            Some(PageResult::KeyError(e)) => {
+                                let resp = Resp::KeyError(e);
+                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
+                                // SearchResponse { resp: Some(resp) }
+                            },
+                            Some(PageResult::ValueError(e)) => {
+                                let resp = Resp::ValueError(e);
+                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
+                                // SearchResponse { resp: Some(resp) }
+                            },
+                            None => break
+                        }
+                    }
+                }); 
+                Ok(Response::new(rx))    
+            },
+            Err(e) => Err(Status::out_of_range(format!("Error: {:?}", e)))
+        }
+
+        //Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 }
