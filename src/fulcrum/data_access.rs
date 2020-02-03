@@ -216,7 +216,7 @@ impl<T: Uid> Pager for T {
         
         match process_uid(key, |_, uid_bytes| Ok(uid_bytes.clone())) {
             Ok((uid, uid_bytes)) => { 
-                debug!("Received Uid: {:?}", uid);
+                debug!("Received Uid: {:?}", uid.clone());
                 tokio::spawn(async move {
                     let actual_page_size = page_size.unwrap_or(default_page_size) as usize;
                     let to_skip = (page.unwrap_or(0) as usize) * actual_page_size;
@@ -229,7 +229,7 @@ impl<T: Uid> Pager for T {
                         }).
                         collect();
 
-                    // debug!("Page: {:?}", uid.clone());
+                    debug!("Page: {:?}", page_data.clone());
 
                     for pd in page_data {
                         let bts = pd.clone();

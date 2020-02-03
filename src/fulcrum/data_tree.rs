@@ -53,7 +53,8 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let key_uid = r.key.map(|k| k.uid).flatten();        
+        let key_uid = r.key.map(|k| k.uid).flatten();
+        // let (key_uid, key) = r.key.map(|k| (k.uid, k.key));        
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
@@ -169,20 +170,14 @@ impl DataTree for DataTreeServer {
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
         let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<String> + Send> = 
-            Box::new(|(k, v)| match Uid::from_key_bytes(&*k) {
+            Box::new(|(k, _v)| match Uid::from_key_bytes(&*k) {
                 Ok(key) => PageResult::Success(key),
                 Err(e) => PageResult::KeyError(e)
             });
 
         let res = match &self.tree { 
-            SimpleKeyColumn(tree) => {
-                get_page_by_prefix_str(tree, 100, Some(r.key_prefix), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await
-            }
-
-                // match contains_key(&tree, r.uid) {
-                //     Ok(v) => contains_response::Resp::Success(v),
-                //     Err(e) => contains_response::Resp::Error(e)
-                // }
+            SimpleKeyColumn(tree) => 
+                get_page_by_prefix_str(tree, 100, Some(r.key_prefix), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await            
         };
 
         match res {
@@ -191,43 +186,40 @@ impl DataTree for DataTreeServer {
                 tokio::spawn(async move { 
                     let mut rxx = rxi;
                     loop {
-                        // rxi.map(|page_result| async move {
-                        //         match page_result {
-                        //             PageResult::Success::<_>(k) => {
-                        //                 let item = SearchResponseItem { key: Some(Key { key: k, key_family: None, uid: None }), value: None, metadata: None };
-                        //                 let resp = Resp::Success(item);
-                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
-                        //                 // SearchResponse { resp: Some(resp) }
-                        //             },
-                        //             PageResult::KeyError(e) => {
-                        //                 let resp = Resp::KeyError(e);
-                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
-                        //                 // SearchResponse { resp: Some(resp) }
-                        //             },
-                        //             PageResult::ValueError(e) => {
-                        //                 let resp = Resp::ValueError(e);
-                        //                 tx.send(SearchResponse { resp: Some(resp) }).await;
-                        //                 // SearchResponse { resp: Some(resp) }
-                        //             }
-                        //         }
-                        // } );
                         let page_result = rxx.recv().await;
+                        debug!("Sending page result: {:?}", page_result.clone());
                         match page_result {
                             Some(PageResult::Success::<_>(k)) => {
+                                debug!("Sending mapped key: {:?}", k.clone());
                                 let item = SearchResponseItem { key: Some(Key { key: k, key_family: None, uid: None }), value: None, metadata: None };
                                 let resp = Resp::Success(item);
-                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
-                                // SearchResponse { resp: Some(resp) }
+                                match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
+                                    Ok(()) => (),
+                                    Err(e) => {
+                                        error!("Error streaming response: '{:?}', '{:?}'", resp, e);
+                                        break;
+                                    }
+                                };
                             },
                             Some(PageResult::KeyError(e)) => {
                                 let resp = Resp::KeyError(e);
-                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
-                                // SearchResponse { resp: Some(resp) }
+                                match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
+                                    Ok(()) => (),
+                                    Err(e) => {
+                                        error!("Error streaming response: '{:?}', '{:?}'", resp, e);
+                                        break;
+                                    }
+                                };
                             },
                             Some(PageResult::ValueError(e)) => {
                                 let resp = Resp::ValueError(e);
-                                tx.send(Ok(SearchResponse { resp: Some(resp) })).await.expect("sadada");
-                                // SearchResponse { resp: Some(resp) }
+                                match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
+                                    Ok(()) => (),
+                                    Err(e) => {
+                                        error!("Error streaming response: '{:?}', '{:?}'", resp, e);
+                                        break;
+                                    }
+                                };
                             },
                             None => break
                         }
@@ -237,7 +229,5 @@ impl DataTree for DataTreeServer {
             },
             Err(e) => Err(Status::out_of_range(format!("Error: {:?}", e)))
         }
-
-        //Err(tonic::Status::unimplemented("Not yet implemented"))
     }
 }
