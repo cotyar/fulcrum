@@ -1,6 +1,7 @@
 #![warn(dead_code)]
 #![warn(unused_imports)]
 
+use core::hash::{Hash, Hasher};
 use core::mem::size_of;
 use core::future::Future;
 use tokio::sync::{mpsc, mpsc::*};
@@ -28,26 +29,45 @@ pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
     fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<Self, InternalError>;
 }
 
-impl Uid for u64 {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyU64(pub u64);
+
+impl Uid for KeyU64 {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
-        Ok(self.to_be_bytes().to_vec())
+        Ok(self.0.to_be_bytes().to_vec())
     }
-    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<u64, InternalError> {
-        Ok(msg_bytes.get_u64())
+    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<Self, InternalError> {
+        Ok(KeyU64(msg_bytes.get_u64()))
     }
 }
 
-impl Uid for String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyString(pub String);
+
+impl Hash for KeyString {
+    fn hash_slice<H: Hasher>(data: &[Self], state: &mut H) where Self: Sized
+    {
+        for piece in data {
+            state.write(piece.0.as_bytes());
+        }
+    }
+    fn hash<H: Hasher>(&self, state: &mut H) { 
+        state.write(self.0.as_bytes());
+    }
+}
+
+impl Uid for KeyString {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
-        Ok(self.bytes().collect())
+        Ok(self.0.bytes().collect())
     }
     fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError> {
         String::from_utf8(msg_bytes.bytes().iter().cloned().collect()).
-            map_err(|e| InternalError { cause: Some(StorageValueDecodingError(DecodeError{ description: e.to_string(), stack: Vec::new() }))})
+            map_err(|e| InternalError { cause: Some(StorageValueDecodingError(DecodeError{ description: e.to_string(), stack: Vec::new() }))}).
+            map(|s| KeyString(s))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyVec(Vec<u8>);
 
 impl Uid for KeyVec {
@@ -95,6 +115,19 @@ impl fmt::Display for KeyUid {
         write!(f, "KeyUid: {:?}", self)
     }
 }
+
+impl fmt::Display for KeyU64 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "KeyU64: {:?}", self)
+    }
+}
+
+impl fmt::Display for KeyString {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "KeyString: {:?}", self)
+    }
+}
+
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -248,14 +281,14 @@ impl<T: Uid> Pager for T {
 }
 
 pub async fn get_page_by_prefix_u64<U: Send + Clone + fmt::Debug + 'static>
-    (tree: &Tree, buffer_size: usize, key: u64, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+    (tree: &Tree, buffer_size: usize, key: KeyU64, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
         f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError> {
     Pager::get_page_by_prefix(tree, buffer_size, Some(key), page, page_size, default_page_size, f).await
 }
 
 pub async fn get_page_by_prefix_str<U: Send + Clone + fmt::Debug + 'static>
-    (tree: &Tree, buffer_size: usize, key: Option<String>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
+    (tree: &Tree, buffer_size: usize, key: Option<KeyString>, page: Option<u32>, page_size: Option<u32>, default_page_size: u32, 
         f: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<U> + Send>)
          -> Result<Receiver<PageResult<U>>, InternalError> {
     Pager::get_page_by_prefix(tree, buffer_size, key, page, page_size, default_page_size, f).await

@@ -169,7 +169,7 @@ impl DataTree for DataTreeServer {
         type Resp = search_response::Resp;
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
-        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<String> + Send> = 
+        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<KeyString> + Send> = 
             Box::new(|(k, _v)| match Uid::from_key_bytes(&*k) {
                 Ok(key) => PageResult::Success(key),
                 Err(e) => PageResult::KeyError(e)
@@ -177,7 +177,7 @@ impl DataTree for DataTreeServer {
 
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                get_page_by_prefix_str(tree, 100, Some(r.key_prefix), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await            
+                get_page_by_prefix_str(tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await            
         };
 
         match res {
@@ -191,7 +191,7 @@ impl DataTree for DataTreeServer {
                         match page_result {
                             Some(PageResult::Success::<_>(k)) => {
                                 debug!("Sending mapped key: {:?}", k.clone());
-                                let item = SearchResponseItem { key: Some(Key { key: k, key_family: None, uid: None }), value: None, metadata: None };
+                                let item = SearchResponseItem { key: Some(Key { key: k.0, key_family: None, uid: None }), value: None, metadata: None };
                                 let resp = Resp::Success(item);
                                 match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
                                     Ok(()) => (),
