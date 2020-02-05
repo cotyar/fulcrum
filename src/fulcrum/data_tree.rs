@@ -55,6 +55,10 @@ fn hasher (k: KeyString) -> Vec<u8> {
     h.finish().to_be_bytes().to_vec()
 }
 
+fn to_key_uid (k: KeyString) -> KeyUid {
+    KeyUid { sip: hasher(k) }
+}
+
 #[tonic::async_trait]
 impl DataTree for DataTreeServer {
     async fn add(&self, request: Request<AddRequest>) -> GrpcResult<AddResponse> {
@@ -71,8 +75,8 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 match add(&tree, key, r.value) { // TODO: Add override flag and/or "return previous"
-                    Success(k) => Resp::Success(KeyUid { sip: hasher(k) }),
-                    Exists(k) => Resp::Exists(KeyUid { sip: hasher(k) }), 
+                    Success(k) => Resp::Success(to_key_uid(k)),
+                    Exists(k) => Resp::Exists(to_key_uid(k)), 
                     Error(e) => Resp::Error(e)
                 },
             // IndexedKeyColumn { uid_tree, index_tree }  => {
@@ -101,13 +105,16 @@ impl DataTree for DataTreeServer {
         debug!("Copy Received: from_key '{:?}' to_key: '{:?}' (from {})", r.key_from, r.key_to, self.addr); // TODO: Fix tracing and remove
         
         let r_for_resp = r.clone(); 
+        let key_from = r.key_from.map(|k| KeyString(k.key));
+        let key_to = r.key_to.map(|k| KeyString(k.key));
+
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match get::<_, Entry>(&tree, r.key_from) {
+                match get::<_, Entry>(&tree, key_from) {
                     GetResult::Success(_uid, v) => {
-                        match add(&tree, r.key_to, Some(v)) { // TODO: Add override flag and/or "return previous"
-                            AddResult::Success(_uid) => Resp::Success(r_for_resp),
-                            AddResult::Exists(_uid) => Resp::ToKeyExists(r_for_resp), 
+                        match add(&tree, key_to, Some(v)) { // TODO: Add override flag and/or "return previous"
+                            AddResult::Success(_k) => Resp::Success(r_for_resp),
+                            AddResult::Exists(_k) => Resp::ToKeyExists(r_for_resp), 
                             AddResult::Error(e) => Resp::Error(e)
                         }      
                     },
@@ -125,13 +132,15 @@ impl DataTree for DataTreeServer {
         type Resp = delete_response::Resp;
 
         let r = request.into_inner();
-        debug!("'{:?}' (from {})", r.uid, self.addr);
+        debug!("'{:?}' (from {})", r.key, self.addr);
+
+        let key = r.key.map(|k| KeyString(k.key));
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match delete(&tree, r.uid) {
-                    Success(uid) => Resp::Success(uid),
-                    NotFound(uid) => Resp::NotFound(uid), 
+                match delete(&tree, key) {
+                    Success(k) => Resp::Success(to_key_uid(k)),
+                    NotFound(k) => Resp::NotFound(to_key_uid(k)), 
                     Error(e) => Resp::Error(e)
                 }
         };
@@ -144,13 +153,15 @@ impl DataTree for DataTreeServer {
         type Resp = get_response::Resp;
 
         let r = request.into_inner();
-        debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
+        debug!("Get Received: '{:?}' (from {})", r.key, self.addr); // TODO: Fix tracing and remove
+
+        let key = r.key.map(|k| KeyString(k.key));
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match get(&tree, r.uid) {
-                    Success(_uid, v) => Resp::Success(v),
-                    NotFound(uid) => Resp::NotFound(uid), 
+                match get(&tree, key) {
+                    Success(_k, v) => Resp::Success(v),
+                    NotFound(k) => Resp::NotFound(to_key_uid(k)), 
                     Error(e) => Resp::Error(e)
                 }
         };
@@ -161,11 +172,13 @@ impl DataTree for DataTreeServer {
 
     async fn contains(&self, request: Request<ContainsRequest>) -> GrpcResult<ContainsResponse> {
         let r = request.into_inner();
-        debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
+        debug!("Contains Received: '{:?}' (from {})", r.key, self.addr);
+
+        let key = r.key.map(|k| KeyString(k.key));
 
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match contains_key(&tree, r.uid) {
+                match contains_key(&tree, key) {
                     Ok(v) => contains_response::Resp::Success(v),
                     Err(e) => contains_response::Resp::Error(e)
                 }

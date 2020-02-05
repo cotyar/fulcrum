@@ -218,7 +218,7 @@ pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T
     }
 }
 
-pub fn contains_key<T: Uid + Default> (tree: &Tree, key: Option<T>) -> Result<bool, InternalError> {
+pub fn contains_key<T: Uid> (tree: &Tree, key: Option<T>) -> Result<bool, InternalError> {
     process_uid(key, |_, uid_bytes| tree.contains_key(uid_bytes)).map(|(_, v)| v)
 }
 

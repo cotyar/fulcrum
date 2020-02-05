@@ -218,7 +218,7 @@ message AddResponse {
 }
 
 message DeleteRequest {
-  KeyUid uid   = 1;
+  Key key   = 1;
 }
 
 message DeleteResponse {
@@ -230,9 +230,9 @@ message DeleteResponse {
 }
 
 message CopyRequest {
-  KeyUid                    keyFrom = 1;
+  Key                       keyFrom = 1;
   google.protobuf.Timestamp expiry  = 2; 
-  KeyUid                    keyTo   = 3;
+  Key                       keyTo   = 3;
   // string correlationId              = 2;
 }
 
@@ -246,7 +246,7 @@ message CopyResponse {
 }
 
 message GetRequest {
-  KeyUid uid = 1;
+  Key key = 1;
 }
 
 message GetResponse {
@@ -258,7 +258,7 @@ message GetResponse {
 }
 
 message ContainsRequest {
-  KeyUid uid = 1;
+  Key key = 1;
 }
 
 message ContainsResponse {
