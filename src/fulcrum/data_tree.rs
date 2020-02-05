@@ -6,6 +6,7 @@ use tracing_attributes::instrument;
 // use std::hash::{Hash, Hasher};
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 
 use bytes::{Bytes, Buf, BufMut};
 
@@ -29,6 +30,10 @@ use sled::{Tree};
 use data_tree_server::DataTree;
 use crate::data_tree::KeyColumn::*;
 
+extern crate siphasher;
+
+use siphasher::sip::{SipHasher24};
+
 #[derive(Debug, Clone)]
 pub enum KeyColumn {
     SimpleKeyColumn(Tree),
@@ -44,6 +49,12 @@ pub struct DataTreeServer {
 type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
 
+fn hasher (k: KeyString) -> Vec<u8> {
+    let mut h = SipHasher24::new();
+    k.hash(&mut h);
+    h.finish().to_be_bytes().to_vec()
+}
+
 #[tonic::async_trait]
 impl DataTree for DataTreeServer {
     async fn add(&self, request: Request<AddRequest>) -> GrpcResult<AddResponse> {
@@ -53,14 +64,15 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let key_uid = r.key.map(|k| k.uid).flatten();
-        // let (key_uid, key) = r.key.map(|k| (k.uid, k.key));        
+        // let key_uid = r.key.map(|k| k.uid).flatten();
+        // let (key_uid, key) = r.key.map(|k| (k.uid, k.key));
+        let key = r.key.map(|k| KeyString(k.key));
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match add(&tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
-                    Success(uid) => Resp::Success(uid),
-                    Exists(uid) => Resp::Exists(uid), 
+                match add(&tree, key, r.value) { // TODO: Add override flag and/or "return previous"
+                    Success(k) => Resp::Success(KeyUid { sip: hasher(k) }),
+                    Exists(k) => Resp::Exists(KeyUid { sip: hasher(k) }), 
                     Error(e) => Resp::Error(e)
                 },
             // IndexedKeyColumn { uid_tree, index_tree }  => {
@@ -137,7 +149,7 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 match get(&tree, r.uid) {
-                    Success(uid, v) => Resp::Success(v),
+                    Success(_uid, v) => Resp::Success(v),
                     NotFound(uid) => Resp::NotFound(uid), 
                     Error(e) => Resp::Error(e)
                 }
