@@ -204,10 +204,12 @@ pub enum GetResult<T: Uid, U: ProstMessage> {
     Error (InternalError)
 }
 
+
+
 pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T, U> {
     match process_uid(key, |_, uid_bytes| tree.get(uid_bytes)) {
         Ok((uid, Some(v_bytes))) => {
-            let bts: Vec<u8> = v_bytes.iter().cloned().collect();
+            let bts = v_bytes.to_vec();
             match U::from_bytes(Bytes::from(bts)) {
                 Ok(v) => GetResult::Success(uid, v),
                 Err(e) => GetResult::Error(e),

@@ -194,15 +194,29 @@ impl DataTree for DataTreeServer {
         type Resp = search_response::Resp;
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
-        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<KeyString> + Send> = 
-            Box::new(|(k, _v)| match Uid::from_key_bytes(&*k) {
-                Ok(key) => PageResult::Success(key),
-                Err(e) => PageResult::KeyError(e)
+        let include_value = r.include_value;
+        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<Entry>)> + Send> = 
+            Box::new(move |(k_bytes, v_bytes)| {
+                match Uid::from_key_bytes(&*k_bytes) {
+                    Ok(key) => {
+                        if include_value {
+                            match Entry::from_bytes(Bytes::from(v_bytes.to_vec())) {
+                                Ok(v) => PageResult::Success((key, Some(v))),
+                                Err(e) => PageResult::ValueError(e),
+                            }
+                        } 
+                        else {
+                            PageResult::Success((key, None))
+                        }
+                    },
+                    Err(e) => PageResult::KeyError(e)
+                }
             });
 
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                get_page_by_prefix_str(tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 1000, Box::new(result_mapper)).await            
+                get_page_by_prefix_str(tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 
+                    1000, result_mapper).await            
         };
 
         match res {
@@ -214,9 +228,10 @@ impl DataTree for DataTreeServer {
                         let page_result = rxx.recv().await;
                         debug!("Sending page result: {:?}", page_result.clone());
                         match page_result {
-                            Some(PageResult::Success::<_>(k)) => {
-                                debug!("Sending mapped key: {:?}", k.clone());
-                                let item = SearchResponseItem { key: Some(Key { key: k.0, key_family: None, uid: None }), value: None, metadata: None };
+                            Some(PageResult::Success::<_>(page_res)) => {
+                                debug!("Sending mapped key: {:?}", page_res.clone());
+                                let (k, v) = page_res;
+                                let item = SearchResponseItem { key: Some(Key { key: k.0.clone(), key_family: None, uid: None /*Some(to_key_uid(k))*/ }), value: v, metadata: None };
                                 let resp = Resp::Success(item);
                                 match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
                                     Ok(()) => (),
