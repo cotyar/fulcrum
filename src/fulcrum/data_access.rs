@@ -102,7 +102,7 @@ impl Uid for KeyUid {
 } // TODO: Revise Key structure
 
 impl ProstMessage for CdnValue {}
-impl ProstMessage for Entry {}
+impl ProstMessage for ValueEntry {}
 
 impl fmt::Display for CdnUid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

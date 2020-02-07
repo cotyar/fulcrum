@@ -110,7 +110,7 @@ impl DataTree for DataTreeServer {
 
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match get::<_, Entry>(&tree, key_from) {
+                match get::<_, ValueEntry>(&tree, key_from) {
                     GetResult::Success(_uid, v) => {
                         match add(&tree, key_to, Some(v)) { // TODO: Add override flag and/or "return previous"
                             AddResult::Success(_k) => Resp::Success(r_for_resp),
@@ -194,13 +194,13 @@ impl DataTree for DataTreeServer {
         type Resp = search_response::Resp;
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
-        let include_value = r.include_value;
-        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<Entry>)> + Send> = 
+        let include_value = r.return_value;
+        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<ValueEntry>)> + Send> = 
             Box::new(move |(k_bytes, v_bytes)| {
                 match Uid::from_key_bytes(&*k_bytes) {
                     Ok(key) => {
                         if include_value {
-                            match Entry::from_bytes(Bytes::from(v_bytes.to_vec())) {
+                            match ValueEntry::from_bytes(Bytes::from(v_bytes.to_vec())) {
                                 Ok(v) => PageResult::Success((key, Some(v))),
                                 Err(e) => PageResult::ValueError(e),
                             }

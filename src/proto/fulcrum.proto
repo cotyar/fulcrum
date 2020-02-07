@@ -190,7 +190,7 @@ message KvMetadata {
   ValueMetadata valueMetadata         = 20;
 }
 
-message Entry {
+message ValueEntry {
   KeyUid keyUid   = 1;
   oneof message {
     int32  i32    = 2;
@@ -205,8 +205,8 @@ message Entry {
 }
 
 message AddRequest {
-  Key   key   = 1;
-  Entry value = 2;
+  Key        key   = 1;
+  ValueEntry value = 2;
 }
 
 message AddResponse {
@@ -251,7 +251,7 @@ message GetRequest {
 
 message GetResponse {
   oneof Resp {
-    Entry         success   = 1;
+    ValueEntry    success   = 1;
     KeyUid        notFound  = 2;
     InternalError error     = 100;
   }
@@ -269,18 +269,18 @@ message ContainsResponse {
 }
 
 message SearchRequest {
-  string keyPrefix        = 1;
-  uint32 pageSize         = 2;
-  uint32 page             = 3;
-  bool   includeFullKey   = 4;
-  bool   includeValue     = 5;
+  string keyPrefix      = 1;
+  uint32 pageSize       = 2;
+  uint32 page           = 3;
+  bool   returnUid      = 4;
+  bool   returnValue    = 5;
   
   // string correlationId    = 50;
 }
 
 message SearchResponseItem {
   Key        key      = 1;
-  Entry      value    = 2;
+  ValueEntry value    = 2;
   KvMetadata metadata = 3;
 }
 
