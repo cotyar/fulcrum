@@ -1,11 +1,8 @@
-use tracing::{debug, error, Level};
-// use tracing_subscriber::FmtSubscriber;
-use tracing_attributes::instrument;
-// use tracing_futures;
+#![warn(dead_code)]
+#![warn(unused_imports)]
 
-// use std::hash::{Hash, Hasher};
-use std::collections::HashSet;
-use std::collections::VecDeque;
+
+use tracing::{debug, error};
 use std::hash::{Hash, Hasher};
 
 use bytes::{Bytes, Buf, BufMut};
@@ -14,12 +11,11 @@ use prost::Message;
 use sled::{Config as SledConfig};
 
 // use futures::Stream;
-use std::fmt;
 use std::net::SocketAddr;
 // use std::pin::Pin;
 use tokio::sync::mpsc;
 use tokio::stream::StreamExt;
-use tonic::{transport::Server, Request, Response, Status /*, Streaming*/};
+use tonic::{Request, Response, Status /*, Streaming*/};
 
 use crate::data_access::*;
 use crate::pb::*;
@@ -59,6 +55,39 @@ fn to_key_uid (k: &KeyString) -> KeyUid {
     KeyUid { sip: hasher(k) }
 }
 
+fn build_kv_entry (k: Option<Key>, v: Option<ValueEntry>) -> Option<(KvEntry, KeyString, KeyUid)> {
+    let ks = k?;
+    let key = KeyString(ks.key);
+    let key_uid = to_key_uid(&key);
+    //let v = r.value?;
+    let kv_entry = KvEntry {
+        // kv_metadata: None,
+        metadata: Some (
+            KvMetadata {
+                key_uid: Some(key_uid.clone()),
+                status: kv_metadata::Status::Active as i32, // TODO: Change proto enum-s to oneof-s
+                expiry: None,
+                /// VectorClock originated      = 4;
+                /// VectorClock locallyUpdated  = 5;
+                action: kv_metadata::UpdateAction::Added as i32,
+                created_by: None,
+                created_at: None,
+                correlation_id: String::from("####"),
+                originator_replica_id: String::from("0"),
+                value_metadata: Some(ValueMetadata {
+                    hashed_with: value_metadata::HashedWith::Sip as i32,
+                    hash: vec!(1,2,3),
+                    compression: value_metadata::Compression::None as i32,
+                    size_compressed: 10,
+                    size_full: 12,
+                    serializer_id: String::from("TBD"),
+                })
+            }
+        ),
+        value: v
+    };
+    Some((kv_entry, key, key_uid))
+}
 
 #[tonic::async_trait]
 impl DataTree for DataTreeServer {
@@ -71,44 +100,11 @@ impl DataTree for DataTreeServer {
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => {
-                let kvf = || {
-                    let ks = r.key?;
-                    let key = KeyString(ks.key);
-                    let key_uid = to_key_uid(&key);
-                    //let v = r.value?;
-                    let kv_entry = KvEntry {
-                        // kv_metadata: None,
-                        metadata: Some (
-                            KvMetadata {
-                                key_uid: Some(key_uid.clone()),
-                                status: kv_metadata::Status::Active as i32, // TODO: Change proto enum-s to oneof-s
-                                expiry: None,
-                                /// VectorClock originated      = 4;
-                                /// VectorClock locallyUpdated  = 5;
-                                action: kv_metadata::UpdateAction::Added as i32,
-                                created_by: None,
-                                created_at: None,
-                                correlation_id: String::from("####"),
-                                originator_replica_id: String::from("0"),
-                                value_metadata: Some(ValueMetadata {
-                                    hashed_with: value_metadata::HashedWith::Sip as i32,
-                                    hash: vec!(1,2,3),
-                                    compression: value_metadata::Compression::None as i32,
-                                    size_compressed: 10,
-                                    size_full: 12,
-                                    serializer_id: String::from("TBD"),
-                                })
-                            }
-                        ),
-                        value: r.value
-                    };
-                    Some((kv_entry, key, key_uid))
-                };
-                let kv = kvf();
-                let (kv_entry, key, key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
+                let kv = build_kv_entry(r.key, r.value);
+                let (kv_entry, key, _key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
                 match add(&tree, key, kv_entry) { // TODO: Add override flag and/or "return previous"
-                    Success(_k) => Resp::Success(key_uid.unwrap()),
-                    Exists(_k) => Resp::Exists(key_uid.unwrap()), 
+                    Success(k) => Resp::Success(Key { key: k.0, key_family: None, uid: None }),
+                    Exists(k) => Resp::Exists(Key { key: k.0, key_family: None, uid: None }), 
                     Error(e) => Resp::Error(e)
                 }
             },
@@ -145,7 +141,7 @@ impl DataTree for DataTreeServer {
             SimpleKeyColumn(tree) => 
                 match get::<_, ValueEntry>(&tree, key_from) {
                     GetResult::Success(_uid, v) => {
-                        match add(&tree, key_to, Some(v)) { // TODO: Add override flag and/or "return previous"
+                        match add(&tree, key_to, Some(v)) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
                             AddResult::Success(_k) => Resp::Success(r_for_resp),
                             AddResult::Exists(_k) => Resp::ToKeyExists(r_for_resp), 
                             AddResult::Error(e) => Resp::Error(e)

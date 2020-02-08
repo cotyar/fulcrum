@@ -218,8 +218,8 @@ message AddRequest {
 
 message AddResponse {
   oneof Resp {
-    KeyUid        success = 1;
-    KeyUid        exists  = 2;
+    Key           success = 1;
+    Key           exists  = 2;
     InternalError error   = 100;
   }
 }
