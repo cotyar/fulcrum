@@ -128,7 +128,7 @@ service CdnControl {
   rpc Delete(CdnDeleteRequest) returns (CdnDeleteResponse) {}
 }
 
-//// Store
+//// Storage
 
 message KeyUid {
   bytes sip = 1;  
@@ -204,6 +204,13 @@ message ValueEntry {
   }
 }
 
+message KvEntry {
+  KvMetadata metadata = 1;
+  ValueEntry value    = 2;
+}
+
+// Store
+
 message AddRequest {
   Key        key   = 1;
   ValueEntry value = 2;
@@ -246,12 +253,13 @@ message CopyResponse {
 }
 
 message GetRequest {
-  Key key = 1;
+  Key  key            = 1;
+  bool returnMetadata = 2;
 }
 
 message GetResponse {
   oneof Resp {
-    ValueEntry    success   = 1;
+    KvEntry       success   = 1;
     KeyUid        notFound  = 2;
     InternalError error     = 100;
   }
@@ -274,6 +282,7 @@ message SearchRequest {
   uint32 page           = 3;
   bool   returnUid      = 4;
   bool   returnValue    = 5;
+  bool   returnMetadata = 6;
   
   // string correlationId    = 50;
 }

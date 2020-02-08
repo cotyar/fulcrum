@@ -49,15 +49,16 @@ pub struct DataTreeServer {
 type GrpcResult<T> = Result<Response<T>, Status>;
 // type ResponseStream = Pin<Box<dyn Stream<Item = Result<EchoResponse, Status>> + Send + Sync>>;
 
-fn hasher (k: KeyString) -> Vec<u8> {
+fn hasher (k: &KeyString) -> Vec<u8> {
     let mut h = SipHasher24::new();
     k.hash(&mut h);
     h.finish().to_be_bytes().to_vec()
 }
 
-fn to_key_uid (k: KeyString) -> KeyUid {
+fn to_key_uid (k: &KeyString) -> KeyUid {
     KeyUid { sip: hasher(k) }
 }
+
 
 #[tonic::async_trait]
 impl DataTree for DataTreeServer {
@@ -68,17 +69,49 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        // let key_uid = r.key.map(|k| k.uid).flatten();
-        // let (key_uid, key) = r.key.map(|k| (k.uid, k.key));
-        let key = r.key.map(|k| KeyString(k.key));
-        
         let res = match &self.tree { 
-            SimpleKeyColumn(tree) => 
-                match add(&tree, key, r.value) { // TODO: Add override flag and/or "return previous"
-                    Success(k) => Resp::Success(to_key_uid(k)),
-                    Exists(k) => Resp::Exists(to_key_uid(k)), 
+            SimpleKeyColumn(tree) => {
+                let kvf = || {
+                    let ks = r.key?;
+                    let key = KeyString(ks.key);
+                    let key_uid = to_key_uid(&key);
+                    //let v = r.value?;
+                    let kv_entry = KvEntry {
+                        // kv_metadata: None,
+                        metadata: Some (
+                            KvMetadata {
+                                key_uid: Some(key_uid.clone()),
+                                status: kv_metadata::Status::Active as i32, // TODO: Change proto enum-s to oneof-s
+                                expiry: None,
+                                /// VectorClock originated      = 4;
+                                /// VectorClock locallyUpdated  = 5;
+                                action: kv_metadata::UpdateAction::Added as i32,
+                                created_by: None,
+                                created_at: None,
+                                correlation_id: String::from("####"),
+                                originator_replica_id: String::from("0"),
+                                value_metadata: Some(ValueMetadata {
+                                    hashed_with: value_metadata::HashedWith::Sip as i32,
+                                    hash: vec!(1,2,3),
+                                    compression: value_metadata::Compression::None as i32,
+                                    size_compressed: 10,
+                                    size_full: 12,
+                                    serializer_id: String::from("TBD"),
+                                })
+                            }
+                        ),
+                        value: r.value
+                    };
+                    Some((kv_entry, key, key_uid))
+                };
+                let kv = kvf();
+                let (kv_entry, key, key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
+                match add(&tree, key, kv_entry) { // TODO: Add override flag and/or "return previous"
+                    Success(_k) => Resp::Success(key_uid.unwrap()),
+                    Exists(_k) => Resp::Exists(key_uid.unwrap()), 
                     Error(e) => Resp::Error(e)
-                },
+                }
+            },
             // IndexedKeyColumn { uid_tree, index_tree }  => {
             //     let key = r.key.map(|k| k.key).flatten();
             //     match add(&uid_tree, key_uid, r.value) { // TODO: Add override flag and/or "return previous"
@@ -139,8 +172,8 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 match delete(&tree, key) {
-                    Success(k) => Resp::Success(to_key_uid(k)),
-                    NotFound(k) => Resp::NotFound(to_key_uid(k)), 
+                    Success(k) => Resp::Success(to_key_uid(&k)),
+                    NotFound(k) => Resp::NotFound(to_key_uid(&k)), 
                     Error(e) => Resp::Error(e)
                 }
         };
@@ -159,9 +192,10 @@ impl DataTree for DataTreeServer {
         
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match get(&tree, key) {
-                    Success(_k, v) => Resp::Success(v),
-                    NotFound(k) => Resp::NotFound(to_key_uid(k)), 
+                match get::<_,KvEntry>(&tree, key) {
+                    //Success(_k, v) => Resp::Success(v),
+                    Success(_k, v) => if r.return_metadata { Resp::Success(v) } else { Resp::Success(KvEntry { metadata: None, value: v.value }) },
+                    NotFound(k) => Resp::NotFound(to_key_uid(&k)), 
                     Error(e) => Resp::Error(e)
                 }
         };
@@ -194,14 +228,15 @@ impl DataTree for DataTreeServer {
         type Resp = search_response::Resp;
         debug!("Search Received: '{:?}' (from {})", r, self.addr);
 
-        let include_value = r.return_value;
-        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<ValueEntry>)> + Send> = 
+        let return_value = r.return_value;
+        let return_metadata = r.return_metadata; 
+        let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<KvEntry>)> + Send> = 
             Box::new(move |(k_bytes, v_bytes)| {
                 match Uid::from_key_bytes(&*k_bytes) {
                     Ok(key) => {
-                        if include_value {
-                            match ValueEntry::from_bytes(Bytes::from(v_bytes.to_vec())) {
-                                Ok(v) => PageResult::Success((key, Some(v))),
+                        if return_value || return_metadata {
+                            match KvEntry::from_bytes(Bytes::from(v_bytes.to_vec())) {
+                                Ok(ke) => PageResult::Success((key, Some(ke))),
                                 Err(e) => PageResult::ValueError(e),
                             }
                         } 
@@ -231,7 +266,9 @@ impl DataTree for DataTreeServer {
                             Some(PageResult::Success::<_>(page_res)) => {
                                 debug!("Sending mapped key: {:?}", page_res.clone());
                                 let (k, v) = page_res;
-                                let item = SearchResponseItem { key: Some(Key { key: k.0.clone(), key_family: None, uid: None /*Some(to_key_uid(k))*/ }), value: v, metadata: None };
+                                let item = SearchResponseItem { key: Some(Key { key: k.0.clone(), key_family: None, uid: None /*Some(to_key_uid(k))*/ }), 
+                                    value: if return_value { v.clone().and_then(|vv|vv.value) } else { None }, 
+                                    metadata: if return_metadata { v.and_then(|vv|vv.metadata) } else { None } };
                                 let resp = Resp::Success(item);
                                 match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
                                     Ok(()) => (),

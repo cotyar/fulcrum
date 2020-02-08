@@ -103,6 +103,7 @@ impl Uid for KeyUid {
 
 impl ProstMessage for CdnValue {}
 impl ProstMessage for ValueEntry {}
+impl ProstMessage for KvEntry {}
 
 impl fmt::Display for CdnUid {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
