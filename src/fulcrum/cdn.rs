@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use prost::Message;
 use bytes::{Buf};
 
-use sled::{Tree};
+use sled::{Tree, TransactionError};
 
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status /*, Streaming*/};
@@ -47,10 +47,18 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
         
-        let res = match add(&self.tree, r.uid, r.value) {
-            Success(uid) => Resp::Success(uid),
-            Exists(uid) => Resp::Exists(uid), 
-            Error(e) => Resp::Error(e)
+        let add_result: &Result<Resp, TransactionError<InternalError>> = &self.tree.transaction(move |tree| {
+            match add(tree, r.uid.clone(), r.value.clone()) {
+                Success(uid) => Ok(Resp::Success(uid)),
+                Exists(uid) => Ok(Resp::Exists(uid)), 
+                Error(e) => Ok(Resp::Error(e))
+            }
+        });
+        let add_res: Result<Resp, InternalError> = add_result.clone().map_err(|e| e.into());
+
+        let res = match add_res {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
         };
 
         Ok(Response::new(CdnAddResponse { resp: Some(res) }))
@@ -92,16 +100,16 @@ impl CdnQuery for CdnServer {
     // #[instrument(level = "debug")]
     #[instrument]
     async fn get(&self, request: Request<CdnGetRequest>) -> GrpcResult<CdnGetResponse> {
-        use GetResult::*;
+        use GetResultSuccess::*;
         type Resp = cdn_get_response::Resp;
 
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
         let res = match get(&self.tree, r.uid) {
-            Success(uid, v) => Resp::Success(v),
-            NotFound(uid) => Resp::NotFound(uid), 
-            Error(e) => Resp::Error(e)
+            Ok(Success(uid, v)) => Resp::Success(v),
+            Ok(NotFound(uid)) => Resp::NotFound(uid), 
+            Err(e) => Resp::Error(e)
         };
 
         debug!("Get Response: '{:?}'", res); 
@@ -135,7 +143,7 @@ impl CdnQuery for CdnServer {
 
         async fn get_kv(tree: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
             match get::<CdnUid, CdnValue>(tree, key) {
-                GetResult::Success(uid, v) => {
+                Ok(GetResultSuccess::Success(uid, v)) => {
                     let msg = &v.message;
                     match msg {
                         Some(cdn_value::Message::Batch(cdn_value::Batch { uids })) => {
@@ -154,11 +162,11 @@ impl CdnQuery for CdnServer {
                         }
                     }
                 },
-                GetResult::NotFound(uid) => { 
+                Ok(GetResultSuccess::NotFound(uid)) => { 
                     send_response_msg(tx, Resp::NotFound(uid)).await;
                     Vec::new()
                 }, 
-                GetResult::Error(e) => {
+                Err(e) => {
                     send_response_msg(tx, Resp::Error(e)).await;
                     Vec::new()
                 }

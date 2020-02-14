@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::thread;
 use crossbeam_epoch::{self as epoch, Atomic, Owned};
 
-
 use bytes::{Bytes, Buf};
 
 extern crate async_trait;
@@ -21,7 +20,8 @@ use internal_error::{*, Cause::*};
 
 use tracing::{debug, error, Level};
 
-use sled::{Tree};
+use sled::{IVec, Tree, TransactionalTree};
+//use sled::{TransactionError, TransactionResult, abort, Transactional, ConflictableTransactionResult, ConflictableTransactionError};
 
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
@@ -182,47 +182,58 @@ impl<T: ProstMessage> ProstMessageExt for T {
     }
 }
 
-fn to_internal_error(e: sled::Error) -> InternalError {
-    InternalError { cause: Some(StorageError(e.to_string())) }
-}
+// fn to_internal_error (e: ConflictableTransactionError<::sled::Error>) -> InternalError {
+//     InternalError { cause: Some(StorageError(e.to_string())) }
+// }
 
 pub fn unwrap_field<T>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
     msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
 }
 
-pub fn process_uid<T: Uid, U> (r_uid: Option<T>, f: impl FnOnce(&T, &Vec<u8>) -> Result<U, ::sled::Error>) -> Result<(T, U), InternalError> {
+pub fn process_uid<T: Uid, U> (r_uid: Option<T>, f: impl FnOnce(&T, &Vec<u8>) -> Result<U, InternalError>) -> Result<(T, U), InternalError> {
     let uid = unwrap_field(r_uid, "uid")?;
     let uid_bytes = uid.to_key_bytes()?;
 
-    let old_value = f(&uid, &uid_bytes).map_err(|e| to_internal_error (e))?;
+    let old_value = f(&uid, &uid_bytes)?;
     Ok((uid, old_value))
 }
 
+// impl fmt::Debug for InternalError {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         let msg = format_internal_error(self);
+//         write!(f, "{{ An Error Occurred: '{:?}', file: {}, line: {} }}", msg, file!(), line!(), ) // programmer-facing output
+//     }
+// }
+
 #[derive(Debug)]
-pub enum GetResult<T: Uid, U: ProstMessage> {
+pub enum GetResultSuccess<T: Uid, U: ProstMessage> {
     Success (T, U),
     NotFound (T),
-    Error (InternalError)
 }
 
-
+pub type GetResult<T: Uid, U: ProstMessage> =
+    std::result::Result<GetResultSuccess<T, U>, InternalError>;
 
 pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T, U> {
-    match process_uid(key, |_, uid_bytes| tree.get(uid_bytes)) {
-        Ok((uid, Some(v_bytes))) => {
+    let (uid, v_bytes_opt) = process_uid(key, |_, uid_bytes| { 
+            let v = tree.get(uid_bytes)?;
+            Ok(v) 
+        })?;
+    match v_bytes_opt {
+        Some (v_bytes) => {
             let bts = v_bytes.to_vec();
-            match U::from_bytes(Bytes::from(bts)) {
-                Ok(v) => GetResult::Success(uid, v),
-                Err(e) => GetResult::Error(e),
-            }
+            let v = U::from_bytes(Bytes::from(bts))?;
+            Ok(GetResultSuccess::Success(uid, v))
         },
-        Ok((uid, None)) => GetResult::NotFound(uid),
-        Err(e) => GetResult::Error(e)
+        None => Ok(GetResultSuccess::NotFound(uid))
     }
 }
 
 pub fn contains_key<T: Uid> (tree: &Tree, key: Option<T>) -> Result<bool, InternalError> {
-    process_uid(key, |_, uid_bytes| tree.contains_key(uid_bytes)).map(|(_, v)| v)
+    process_uid(key, |_, uid_bytes| { 
+        let v = tree.contains_key(uid_bytes)?;
+        Ok(v)
+     }).map(|(_, v)| v)
 }
 
 #[derive(Debug, Clone)]
@@ -261,7 +272,7 @@ impl<T: Uid> Pager for T {
                         take(actual_page_size).
                         map(|next_v| match next_v {
                             Ok(k) => f(k),
-                            Err(e) => PageResult::KeyError(to_internal_error(e.clone()))
+                            Err(e) => PageResult::KeyError(e.into())
                         }).
                         collect();
 
@@ -313,7 +324,10 @@ pub enum DeleteResult<T: Uid> {
 }
 
 pub fn delete<T: Uid> (tree: &Tree, key: Option<T>) -> DeleteResult<T> {
-    match process_uid(key, |_, uid_bytes| tree.remove(uid_bytes)) {
+    match process_uid(key, |_, uid_bytes| { 
+        let v = tree.remove(uid_bytes)?;
+        Ok(v) 
+    }) {
         Ok((uid, Some(_))) => DeleteResult::Success(uid),
         Ok((uid, None)) => DeleteResult::NotFound(uid),
         Err(e) => DeleteResult::Error(e)
@@ -327,22 +341,25 @@ pub enum AddResult<T: Uid> {
     Error (InternalError)
 }
 
-pub fn add<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>, value: Option<U>) -> AddResult<T> {
+pub fn add<T: Uid, U: ProstMessage> (tree: &TransactionalTree, key: Option<T>, value: Option<U>) -> AddResult<T> {
     let res = || -> Result<AddResult<T>, InternalError> {
         let val = unwrap_field(value, "value")?;
         let value_bytes = val.to_bytes()?;
 
-        let check_and_insert = |uid: &T, uid_bytes: &Vec<u8>| -> Result<_, ::sled::Error> {
-            let contains = tree.contains_key(uid_bytes)?;
-            if contains { 
-                Ok(AddResult::<T>::Exists(uid.clone()))
-            }
-            else {
-                let existing = tree.insert(uid_bytes, value_bytes)?; 
-                if existing.is_some() {
-                    error!("Unexpected override of the value in store: '{}'", uid); 
+        let check_and_insert = move |uid: &T, uid_bytes: &Vec<u8>| -> Result<_, InternalError> {
+            //let contains = tree.contains_key(uid_bytes)?;
+            let get_result: Result<_, ::sled::ConflictableTransactionError<Option<IVec>>> = tree.get(uid_bytes.clone()).map_err(|e| e.into());
+            let contains = get_result?;
+            match contains { 
+                Some(_) => Ok(AddResult::<T>::Exists(uid.clone())),
+                None => {
+                    let existing_result: Result<_, ::sled::ConflictableTransactionError<Option<IVec>>> = tree.insert(uid_bytes.clone(), value_bytes).map_err(|e| e.into());
+                    let existing = existing_result?; 
+                    if existing.is_some() {
+                        error!("Unexpected override of the value in store: '{}'", uid); 
+                    }
+                    Ok(AddResult::<T>::Success(uid.clone()))
                 }
-                Ok(AddResult::<T>::Success(uid.clone()))
             } 
         };    
         

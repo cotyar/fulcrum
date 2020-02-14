@@ -31,6 +31,9 @@ message InternalError {
     EncodeError storageValueEncodingError = 2;
     DecodeError storageValueDecodingError = 3;
     string      storageError              = 4;
+    string      transactionAborted        = 5;
+    string      keyError                  = 6;
+    string      valueError                = 7;
   }
 }
 
