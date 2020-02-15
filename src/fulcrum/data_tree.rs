@@ -92,7 +92,7 @@ fn build_kv_entry (k: Option<Key>, v: Option<ValueEntry>) -> Option<(KvEntry, Ke
 #[tonic::async_trait]
 impl DataTree for DataTreeServer {
     async fn add(&self, request: Request<AddRequest>) -> GrpcResult<AddResponse> {
-        use AddResult::*;
+        use AddResultSuccess::*;
         type Resp = add_response::Resp;
 
         let r = request.into_inner();
@@ -105,9 +105,9 @@ impl DataTree for DataTreeServer {
                 
                 let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
                     match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
-                        Success(k) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
-                        Exists(k) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
-                        Error(e) => Ok(Resp::Error(e))
+                        Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
+                        Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
+                        Err(e) => Ok(Resp::Error(e))
                     }
                 });
                 let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
@@ -155,9 +155,9 @@ impl DataTree for DataTreeServer {
                     Ok(GetResultSuccess::Success(_uid, v)) => {
                         let add_res: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree|
                             match add(&tree, key_to.clone(), Some(v.clone())) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
-                                AddResult::Success(_k) => Ok(Resp::Success(r_for_resp.clone())),
-                                AddResult::Exists(_k) => Ok(Resp::ToKeyExists(r_for_resp.clone())), 
-                                AddResult::Error(e) => Ok(Resp::Error(e))
+                                Ok(AddResultSuccess::Success(_k)) => Ok(Resp::Success(r_for_resp.clone())),
+                                Ok(AddResultSuccess::Exists(_k)) => Ok(Resp::ToKeyExists(r_for_resp.clone())), 
+                                Err(e) => Ok(Resp::Error(e))
                             }
                         );
                         match add_res {
@@ -175,7 +175,7 @@ impl DataTree for DataTreeServer {
     }
 
     async fn delete(&self, request: Request<DeleteRequest>) -> GrpcResult<DeleteResponse> {
-        use DeleteResult::*;
+        use DeleteResultSuccess::*;
         type Resp = delete_response::Resp;
 
         let r = request.into_inner();
@@ -186,9 +186,9 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 match delete(&tree, key) {
-                    Success(k) => Resp::Success(to_key_uid(&k)),
-                    NotFound(k) => Resp::NotFound(to_key_uid(&k)), 
-                    Error(e) => Resp::Error(e)
+                    Ok(Success(k)) => Resp::Success(to_key_uid(&k)),
+                    Ok(NotFound(k)) => Resp::NotFound(to_key_uid(&k)), 
+                    Err(e) => Resp::Error(e)
                 }
         };
 
@@ -244,26 +244,19 @@ impl DataTree for DataTreeServer {
         let return_metadata = r.return_metadata; 
         let result_mapper: Box<dyn Fn((sled::IVec, sled::IVec)) -> PageResult<(KeyString, Option<KvEntry>)> + Send> = 
             Box::new(move |(k_bytes, v_bytes)| {
-                match Uid::from_key_bytes(&*k_bytes) {
-                    Ok(key) => {
-                        if return_value || return_metadata {
-                            match KvEntry::from_bytes(Bytes::from(v_bytes.to_vec())) {
-                                Ok(ke) => PageResult::Success((key, Some(ke))),
-                                Err(e) => PageResult::ValueError(e),
-                            }
-                        } 
-                        else {
-                            PageResult::Success((key, None))
-                        }
-                    },
-                    Err(e) => PageResult::KeyError(e)
-                }
+                let key = Uid::from_key_bytes(&*k_bytes)?;                        
+                let key_entry = if return_value || return_metadata {
+                    let key_entry = KvEntry::from_bytes(Bytes::from(v_bytes.to_vec()))?;
+                    Some(key_entry)
+                } 
+                else { None };
+                Ok(PageResultSuccess::Success((key, key_entry)))
             });
 
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 get_page_by_prefix_str(tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 
-                    1000, result_mapper).await            
+                    1000, result_mapper).await
         };
 
         match res {
@@ -275,7 +268,7 @@ impl DataTree for DataTreeServer {
                         let page_result = rxx.recv().await;
                         debug!("Sending page result: {:?}", page_result.clone());
                         match page_result {
-                            Some(PageResult::Success::<_>(page_res)) => {
+                            Some(Ok(PageResultSuccess::Success::<_>(page_res))) => {
                                 debug!("Sending mapped key: {:?}", page_res.clone());
                                 let (k, v) = page_res;
                                 let item = SearchResponseItem { key: Some(Key { key: k.0.clone(), key_family: None, uid: None /*Some(to_key_uid(k))*/ }), 
@@ -290,18 +283,8 @@ impl DataTree for DataTreeServer {
                                     }
                                 };
                             },
-                            Some(PageResult::KeyError(e)) => {
+                            Some(Err(e)) => {
                                 let resp = Resp::KeyError(e);
-                                match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
-                                    Ok(()) => (),
-                                    Err(e) => {
-                                        error!("Error streaming response: '{:?}', '{:?}'", resp, e);
-                                        break;
-                                    }
-                                };
-                            },
-                            Some(PageResult::ValueError(e)) => {
-                                let resp = Resp::ValueError(e);
                                 match tx.send(Ok(SearchResponse { resp: Some(resp.clone()) })).await {
                                     Ok(()) => (),
                                     Err(e) => {

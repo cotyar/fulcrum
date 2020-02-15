@@ -41,7 +41,6 @@ impl CdnControl for CdnServer {
 
     #[instrument]
     async fn add(&self, request: Request<CdnAddRequest>) -> GrpcResult<CdnAddResponse> {
-        use AddResult::*;
         type Resp = cdn_add_response::Resp;
 
         let r = request.into_inner();
@@ -49,9 +48,9 @@ impl CdnControl for CdnServer {
         
         let add_result: &Result<Resp, TransactionError<InternalError>> = &self.tree.transaction(move |tree| {
             match add(tree, r.uid.clone(), r.value.clone()) {
-                Success(uid) => Ok(Resp::Success(uid)),
-                Exists(uid) => Ok(Resp::Exists(uid)), 
-                Error(e) => Ok(Resp::Error(e))
+                Ok(AddResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
+                Ok(AddResultSuccess::Exists(uid)) => Ok(Resp::Exists(uid)), 
+                Err(e) => Ok(Resp::Error(e))
             }
         });
         let add_res: Result<Resp, InternalError> = add_result.clone().map_err(|e| e.into());
@@ -65,16 +64,15 @@ impl CdnControl for CdnServer {
     }
 
     async fn delete(&self, request: Request<CdnDeleteRequest>) -> GrpcResult<CdnDeleteResponse> {
-        use DeleteResult::*;
         type Resp = cdn_delete_response::Resp;
 
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
         let res = match delete(&self.tree, r.uid) {
-            Success(uid) => Resp::Success(uid),
-            NotFound(uid) => Resp::NotFound(uid), 
-            Error(e) => Resp::Error(e)
+            Ok(DeleteResultSuccess::Success(uid)) => Resp::Success(uid),
+            Ok(DeleteResultSuccess::NotFound(uid)) => Resp::NotFound(uid), 
+            Err(e) => Resp::Error(e)
         };
 
         Ok(Response::new(CdnDeleteResponse { resp: Some(res) }))
