@@ -143,7 +143,7 @@ impl DataTree for DataTreeServer {
             let key_to = unwrap_field(r.key_to, "key_to")?;
             match &self.tree { 
                 SimpleKeyColumn(tree) => 
-                    match get::<_, ValueEntry>(&tree, KeyString(key_from.key))? {
+                    match get::<_, KvEntry>(&tree, KeyString(key_from.key))? {
                         GetResultSuccess::Success(_uid, v) => {
                             tree.transaction::<_,_,InternalError>(|tree|
                                 match add(&tree, KeyString(key_to.key.clone()), v.clone()) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
