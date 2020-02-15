@@ -27,7 +27,7 @@ use siphasher::sip::{SipHasher24};
 #[derive(Debug, Clone)]
 pub enum KeyColumn {
     SimpleKeyColumn(Tree),
-    //IndexedKeyColumn { uid_tree: Tree, index_tree: Tree } 
+    // IndexedKeyColumn { uid_tree: Tree, index_tree: Tree } 
 }
 
 #[derive(Debug, Clone)]
@@ -49,11 +49,9 @@ fn to_key_uid (k: &KeyString) -> KeyUid {
     KeyUid { sip: hasher(k) }
 }
 
-fn build_kv_entry (k: Option<Key>, v: Option<ValueEntry>) -> Option<(KvEntry, KeyString, KeyUid)> {
-    let ks = k?;
-    let key = KeyString(ks.key);
+fn build_kv_entry (k: Key, v: Option<ValueEntry>) -> (KvEntry, KeyString, KeyUid) {
+    let key = KeyString(k.key);
     let key_uid = to_key_uid(&key);
-    //let v = r.value?;
     let kv_entry = KvEntry {
         // kv_metadata: None,
         metadata: Some (
@@ -80,7 +78,7 @@ fn build_kv_entry (k: Option<Key>, v: Option<ValueEntry>) -> Option<(KvEntry, Ke
         ),
         value: v
     };
-    Some((kv_entry, key, key_uid))
+    (kv_entry, key, key_uid)
 }
 
 #[tonic::async_trait]
@@ -92,45 +90,49 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let res = match &self.tree { 
-            SimpleKeyColumn(tree) => {
-                let kv = build_kv_entry(r.key, r.value);
-                let (kv_entry, key, _key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
-                
-                let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
-                    match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
-                        Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
-                        Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
-                        Err(e) => Ok(Resp::Error(e))
-                    }
-                });
-                let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
+        let res = move || {
+            match &self.tree { 
+                SimpleKeyColumn(tree) => {
+                    let key = unwrap_field(r.key, "key")?;
+                    let (kv_entry, key, _key_uid) = build_kv_entry(key, r.value);
+                    
+                    let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
+                        match add(tree, Some(key.clone()), Some(kv_entry.clone())) { // TODO: Add override flag and/or "return previous"
+                            Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
+                            Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
+                            Err(e) => Ok(Resp::Error(e))
+                        }
+                    });
+                    let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
+                    add_res
+                },
+                // IndexedKeyColumn { uid_tree, index_tree }  => {
+                //     let kv = build_kv_entry(r.key, r.value);
+                //     let (kv_entry, key, _key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
+                    
+                //     let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
+                //         match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
+                //             Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
+                //             Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
+                //             Err(e) => Ok(Resp::Error(e))
+                //         }
+                //     });
+                //     let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
 
-                match add_res {
-                    Ok(r) => r,
-                    Err(e) => Resp::Error(e)
-                } 
-            },
-            // IndexedKeyColumn { uid_tree, index_tree }  => {
-            //     let kv = build_kv_entry(r.key, r.value);
-            //     let (kv_entry, key, key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
-            //     match (uid_tree, index_tree).transaction(move |(uid_tree, index_tree)| {
-            //         match add(uid_tree, key_uid, key) {
-            //             Success(k) => {
-            //                 Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })) 
-            //             },
-            //             Exists(k) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
-            //             Error(e) => Ok(Resp::Error(e))
-            //         }
-            //     }) {
-            //         Ok(r) => r,
-            //         Err(e) => 
-            //             Resp::Error(InternalError { cause: Some(internal_error::Cause::TransactionAborted(e.to_string()))})
-            //     } 
-            // }
+                //     match add_res {
+                //         Ok(r) => r,
+                //         Err(e) => Resp::Error(e)
+                //     } 
+                // }
+            }
         };
 
-        Ok(Response::new(AddResponse { resp: Some(res) }))
+        let resp: Resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+
+        Ok(Response::new(AddResponse { resp: Some(resp) }))
     }
 
     async fn copy(&self, request: Request<CopyRequest>) -> GrpcResult<CopyResponse> {
