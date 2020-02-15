@@ -1,6 +1,7 @@
 #![warn(dead_code)]
 #![warn(unused_imports)]
 
+use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use tokio::sync::{mpsc, mpsc::*};
 use std::fmt;
@@ -15,7 +16,7 @@ use internal_error::{*, Cause::*};
 
 use tracing::{debug, error};
 
-use sled::{IVec, Tree, TransactionalTree};
+use sled::{IVec, Tree, TransactionalTree, ConflictableTransactionError};
 
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
@@ -181,31 +182,29 @@ pub fn unwrap_field<T>(msg: Option<T>, field_name: &str) -> Result<T, InternalEr
 }
 
 #[derive(Debug)]
-pub enum GetResultSuccess<T: Uid, U: ProstMessage> {
-    Success (T, U),
-    NotFound (T),
+pub enum GetResultSuccess<K: Uid + Borrow<K>, U: ProstMessage> {
+    Success (K, U),
+    NotFound (K),
 }
 
-pub type GetResult<T, U> = std::result::Result<GetResultSuccess<T, U>, InternalError>;
+pub type GetResult<K, U> = std::result::Result<GetResultSuccess<K, U>, InternalError>;
 
-pub fn get<T: Uid, U: ProstMessage> (tree: &Tree, key: Option<T>) -> GetResult<T, U> {
-    let uid = unwrap_field(key, "uid")?;
-    let uid_bytes = uid.to_key_bytes()?;
-    let v_bytes_opt = tree.get(uid_bytes)?;
+pub fn get<K: Uid + Borrow<K>, U: ProstMessage> (tree: &Tree, key: K) -> GetResult<K, U> {
+    let key_bytes = key.to_key_bytes()?;
+    let v_bytes_opt = tree.get(key_bytes)?;
     match v_bytes_opt {
         Some (v_bytes) => {
             let bts = v_bytes.to_vec();
             let v = U::from_bytes(Bytes::from(bts))?;
-            Ok(GetResultSuccess::Success(uid, v))
+            Ok(GetResultSuccess::Success(key, v))
         },
-        None => Ok(GetResultSuccess::NotFound(uid))
+        None => Ok(GetResultSuccess::NotFound(key))
     }
 }
 
-pub fn contains_key<T: Uid> (tree: &Tree, key: Option<T>) -> Result<bool, InternalError> {
-    let uid = unwrap_field(key, "uid")?;
-    let uid_bytes = uid.to_key_bytes()?;
-    Ok(tree.contains_key(uid_bytes)?)
+pub fn contains_key<K: Uid + Borrow<K>> (tree: &Tree, key: K) -> Result<bool, InternalError> {
+    let key_bytes = key.to_key_bytes()?;
+    Ok(tree.contains_key(key_bytes)?)
 }
 
 #[derive(Debug, Clone)]
@@ -287,51 +286,46 @@ pub async fn get_page_by_prefix_bytes<U: Send + Clone + fmt::Debug + 'static>
 
 
 #[derive(Debug)]
-pub enum DeleteResultSuccess<T: Uid> {
-    Success (T),
-    NotFound (T)
+pub enum DeleteResultSuccess<K: Uid> {
+    Success (K),
+    NotFound (K)
 }
 
-pub type DeleteResult<T> = std::result::Result<DeleteResultSuccess<T>, InternalError>;
+pub type DeleteResult<K> = std::result::Result<DeleteResultSuccess<K>, InternalError>;
 
-pub fn delete<T: Uid> (tree: &Tree, key: Option<T>) -> DeleteResult<T> {
-    let uid = unwrap_field(key, "uid")?;
-    let uid_bytes = uid.to_key_bytes()?;
+pub fn delete<K: Uid> (tree: &Tree, key: K) -> DeleteResult<K> {
+    let key_bytes = key.to_key_bytes()?;
 
-    let v = tree.remove(uid_bytes)?;
+    let v = tree.remove(key_bytes)?;
     match v {
-        Some(_) => Ok(DeleteResultSuccess::Success(uid)),
-        None => Ok(DeleteResultSuccess::NotFound(uid))
+        Some(_) => Ok(DeleteResultSuccess::Success(key)),
+        None => Ok(DeleteResultSuccess::NotFound(key))
     }
 }
 
 #[derive(Debug)]
-pub enum AddResultSuccess<T: Uid> {
-    Success (T),
-    Exists (T)
+pub enum AddResultSuccess<K: Uid> {
+    Success (K),
+    Exists (K)
 }
 
-pub type AddResult<T> = std::result::Result<AddResultSuccess<T>, InternalError>;
+pub type AddResult<K> = std::result::Result<AddResultSuccess<K>, InternalError>;
 
-pub fn add<T: Uid, U: ProstMessage> (tree: &TransactionalTree, key: Option<T>, value: Option<U>) -> AddResult<T> {
-    let uid = unwrap_field(key, "uid")?;
-    let uid_bytes = uid.to_key_bytes()?;
+pub fn add<K: Uid, V: ProstMessage> (tree: &TransactionalTree, key: K, value: V) -> AddResult<K> {
+    let key_bytes = key.to_key_bytes()?;
 
-    let val = unwrap_field(value, "value")?;
-    let value_bytes = val.to_bytes()?;
+    let value_bytes = value.to_bytes()?;
 
         //let contains = tree.contains_key(uid_bytes)?;
-    let get_result: Result<_, ::sled::ConflictableTransactionError<Option<IVec>>> = tree.get(uid_bytes.clone()).map_err(|e| e.into());
-    let contains = get_result?;
+    let contains = tree.get(key_bytes.clone()).map_err(|e| ConflictableTransactionError::<Option<IVec>>::from(e))?;
     match contains { 
-        Some(_) => Ok(AddResultSuccess::<T>::Exists(uid)),
+        Some(_) => Ok(AddResultSuccess::Exists(key)),
         None => {
-            let existing_result: Result<_, ::sled::ConflictableTransactionError<Option<IVec>>> = tree.insert(uid_bytes, value_bytes).map_err(|e| e.into());
-            let existing = existing_result?; 
+            let existing = tree.insert(key_bytes.clone(), value_bytes).map_err(|e| ConflictableTransactionError::<Option<IVec>>::from(e))?;
             if existing.is_some() {
-                error!("Unexpected override of the value in store: '{}'", uid); 
+                error!("Unexpected override of the value in store: '{}'", key); 
             }
-            Ok(AddResultSuccess::<T>::Success(uid))
+            Ok(AddResultSuccess::Success(key))
         }
     } 
 }

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
-use sled::{Tree, TransactionError};
+use sled::{Tree};
 
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status /*, Streaming*/};
@@ -37,24 +37,33 @@ impl CdnControl for CdnServer {
     async fn add(&self, request: Request<CdnAddRequest>) -> GrpcResult<CdnAddResponse> {
         type Resp = cdn_add_response::Resp;
 
-        let r = request.into_inner();
+        let r: CdnAddRequest = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.uid, r.value, self.addr);        
-        
-        let add_result: &Result<Resp, TransactionError<InternalError>> = &self.tree.transaction(move |tree| {
-            match add(tree, r.uid.clone(), r.value.clone()) {
-                Ok(AddResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
-                Ok(AddResultSuccess::Exists(uid)) => Ok(Resp::Exists(uid)), 
-                Err(e) => Ok(Resp::Error(e))
-            }
-        });
-        let add_res: Result<Resp, InternalError> = add_result.clone().map_err(|e| e.into());
 
-        let res = match add_res {
-            Ok(r) => r,
-            Err(e) => Resp::Error(e)
+        let res = || {
+            let uid: CdnUid = unwrap_field(r.uid, "uid")?;
+            let value = unwrap_field(r.value, "value")?;
+            
+            let tr = self.tree.transaction::<_,_,InternalError>(|tree| {
+                match add(tree, uid.clone(), value.clone()) { // TODO: Add override flag and/or "return previous"
+                    Ok(AddResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
+                    Ok(AddResultSuccess::Exists(uid)) => Ok(Resp::Exists(uid)), 
+                    Err(e) => Ok(Resp::Error(e))
+                }
+            }).map_err(|e| InternalError::from(e));
+            
+            // let tr = self.tree.transaction::<_,_,InternalError>(|tree| {
+            //     add(tree, uid, value)?
+            // }).map_err(|e| InternalError::from(e));
+            tr
         };
 
-        Ok(Response::new(CdnAddResponse { resp: Some(res) }))
+        let resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+
+        Ok(Response::new(CdnAddResponse { resp: Some(resp) }))
     }
 
     async fn delete(&self, request: Request<CdnDeleteRequest>) -> GrpcResult<CdnDeleteResponse> {
@@ -63,7 +72,7 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match delete(&self.tree, r.uid) {
+        let res = match unwrap_field(r.uid, "uid").and_then(|uid| delete(&self.tree, uid)) {
             Ok(DeleteResultSuccess::Success(uid)) => Resp::Success(uid),
             Ok(DeleteResultSuccess::NotFound(uid)) => Resp::NotFound(uid), 
             Err(e) => Resp::Error(e)
@@ -98,7 +107,7 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
-        let res = match get(&self.tree, r.uid) {
+        let res = match unwrap_field(r.uid, "uid").and_then(|uid| get(&self.tree, uid)) {
             Ok(Success(_uid, v)) => Resp::Success(v),
             Ok(NotFound(uid)) => Resp::NotFound(uid), 
             Err(e) => Resp::Error(e)
@@ -112,7 +121,8 @@ impl CdnQuery for CdnServer {
         let r = request.into_inner();
         debug!("Contains Received: '{:?}' (from {})", r.uid, self.addr);
 
-        let res = match contains_key(&self.tree, r.uid) {
+        let contains_res = unwrap_field(r.uid, "uid").and_then(|uid| contains_key(&self.tree, uid));
+        let res = match contains_res {
             Ok(v) => cdn_contains_response::Resp::Success(v),
             Err(e) => cdn_contains_response::Resp::Error(e)
         };
@@ -128,65 +138,69 @@ impl CdnQuery for CdnServer {
         let message = format!("'{:?}' (from {})", r.uid, self.addr);
         println!("StreamValueStream Received: {}", message);
 
-        let key = r.uid;
-
         let (mut tx, rx) = mpsc::channel(100); // TODO: Move constant to config
-        let tree = self.tree.clone();
 
-        async fn get_kv(tree: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
-            match get::<CdnUid, CdnValue>(tree, key) {
-                Ok(GetResultSuccess::Success(uid, v)) => {
-                    let msg = &v.message;
-                    match msg {
-                        Some(cdn_value::Message::Batch(cdn_value::Batch { uids })) => {
-                            send_response_msg(tx, Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
-                            uids.clone()
+        match r.uid {
+            None => return Err(Status::invalid_argument(String::from("uid field is missing"))),
+            Some(key) => {
+                let tree = self.tree.clone();
+
+                async fn get_kv(tree: &Tree, tx: &mut StreamValueStreamSender, key: CdnUid) -> Vec<CdnUid> {
+                    match get::<CdnUid, CdnValue>(tree, key) {
+                        Ok(GetResultSuccess::Success(uid, v)) => {
+                            let msg = &v.message;
+                            match msg {
+                                Some(cdn_value::Message::Batch(cdn_value::Batch { uids })) => {
+                                    send_response_msg(tx, Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
+                                    uids.clone()
+                                },
+                                Some(cdn_value::Message::Bytes(_)) => {
+                                    send_response_msg(tx, Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
+                                    Vec::new()
+                                },
+                                None => {
+                                    let e = InternalError { cause: Some(StorageValueDecodingError( DecodeError { description: "'message' field is required".to_string(), stack: vec![ internal_error::decode_error::StackLine { message: "field is required".to_string(), field: "message".to_string() } ] })) };
+                                    error! ("uid: {}, '{:?}'", uid, e);
+                                    send_response_msg(tx, Resp::Error(e)).await;
+                                    Vec::new()
+                                }
+                            }
                         },
-                        Some(cdn_value::Message::Bytes(_)) => {
-                            send_response_msg(tx, Resp::Success(CdnKeyValue { key: Some(uid), value: Some(v.clone()) })).await;
+                        Ok(GetResultSuccess::NotFound(uid)) => { 
+                            send_response_msg(tx, Resp::NotFound(uid)).await;
                             Vec::new()
-                        },
-                        None => {
-                            let e = InternalError { cause: Some(StorageValueDecodingError( DecodeError { description: "'message' field is required".to_string(), stack: vec![ internal_error::decode_error::StackLine { message: "field is required".to_string(), field: "message".to_string() } ] })) };
-                            error! ("uid: {}, '{:?}'", uid, e);
+                        }, 
+                        Err(e) => {
                             send_response_msg(tx, Resp::Error(e)).await;
                             Vec::new()
                         }
                     }
-                },
-                Ok(GetResultSuccess::NotFound(uid)) => { 
-                    send_response_msg(tx, Resp::NotFound(uid)).await;
-                    Vec::new()
-                }, 
-                Err(e) => {
-                    send_response_msg(tx, Resp::Error(e)).await;
-                    Vec::new()
                 }
+
+                tokio::spawn(async move {
+                    let mut seen = HashSet::<String>::new(); // TODO: implement Hash for CdnUid
+                    let mut remaining_keys = VecDeque::new();
+                    remaining_keys.push_back(key);
+                    
+                    while 
+                        match remaining_keys.pop_front() { 
+                            Some (next_key) => {
+                                let keys = get_kv(&tree, &mut tx, next_key).await;
+                                for k in keys {
+                                    if !seen.contains(&k.message) {
+                                        seen.insert(k.message.clone());
+                                        remaining_keys.push_back(k);
+                                    }
+                                }
+                                true
+                            },
+                            None => false
+                        }
+                    {
+                    }
+                });
             }
         }
-
-        tokio::spawn(async move {
-            let mut seen = HashSet::<String>::new(); // TODO: implement Hash for CdnUid
-            let mut remaining_keys = VecDeque::new();
-            remaining_keys.push_back(key);
-            
-            while 
-                match remaining_keys.pop_front() { 
-                    Some (next_key) => {
-                        let keys = get_kv(&tree, &mut tx, next_key).await;
-                        for k in keys {
-                            if !seen.contains(&k.message) {
-                                seen.insert(k.message.clone());
-                                remaining_keys.push_back(Some(k));
-                            }
-                        }
-                        true
-                    },
-                    None => false
-                }
-            {
-            }
-        });
 
         Ok(Response::new(rx))
     }

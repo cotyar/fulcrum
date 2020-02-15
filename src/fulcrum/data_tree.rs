@@ -1,13 +1,10 @@
 #![warn(dead_code)]
-#![warn(unused_imports)]
 
 
 use tracing::{debug, error};
 use std::hash::{Hash, Hasher};
 
 use bytes::Bytes;
-
-use sled::TransactionError;
 
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
@@ -90,21 +87,19 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
-        let res = move || {
+        let res = || {
             match &self.tree { 
                 SimpleKeyColumn(tree) => {
                     let key = unwrap_field(r.key, "key")?;
                     let (kv_entry, key, _key_uid) = build_kv_entry(key, r.value);
                     
-                    let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
-                        match add(tree, Some(key.clone()), Some(kv_entry.clone())) { // TODO: Add override flag and/or "return previous"
+                    tree.transaction::<_,_,InternalError>(|tree| {
+                        match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
                             Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
                             Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
                             Err(e) => Ok(Resp::Error(e))
                         }
-                    });
-                    let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
-                    add_res
+                    }).map_err(|e| InternalError::from(e))
                 },
                 // IndexedKeyColumn { uid_tree, index_tree }  => {
                 //     let kv = build_kv_entry(r.key, r.value);
@@ -142,32 +137,34 @@ impl DataTree for DataTreeServer {
         debug!("Copy Received: from_key '{:?}' to_key: '{:?}' (from {})", r.key_from, r.key_to, self.addr); // TODO: Fix tracing and remove
         
         let r_for_resp = r.clone(); 
-        let key_from = r.key_from.map(|k| KeyString(k.key));
-        let key_to = r.key_to.map(|k| KeyString(k.key));
 
-        let res = match &self.tree { 
-            SimpleKeyColumn(tree) => 
-                match get::<_, ValueEntry>(&tree, key_from) {
-                    Ok(GetResultSuccess::Success(_uid, v)) => {
-                        let add_res: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree|
-                            match add(&tree, key_to.clone(), Some(v.clone())) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
-                                Ok(AddResultSuccess::Success(_k)) => Ok(Resp::Success(r_for_resp.clone())),
-                                Ok(AddResultSuccess::Exists(_k)) => Ok(Resp::ToKeyExists(r_for_resp.clone())), 
-                                Err(e) => Ok(Resp::Error(e))
-                            }
-                        );
-                        match add_res {
-                            Ok(r) => r,
-                            Err(e) => Resp::Error(e.into())
-                        }
-                    },
-                    Ok(GetResultSuccess::NotFound(_uid)) => Resp::FromKeyNotFound(r_for_resp), 
-                    Err(e) => Resp::Error(e)
-                }
+        let res = || {
+            let key_from = unwrap_field(r.key_from, "key_from")?;
+            let key_to = unwrap_field(r.key_to, "key_to")?;
+            match &self.tree { 
+                SimpleKeyColumn(tree) => 
+                    match get::<_, ValueEntry>(&tree, KeyString(key_from.key))? {
+                        GetResultSuccess::Success(_uid, v) => {
+                            tree.transaction::<_,_,InternalError>(|tree|
+                                match add(&tree, KeyString(key_to.key.clone()), v.clone()) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
+                                    Ok(AddResultSuccess::Success(_k)) => Ok(Resp::Success(r_for_resp.clone())),
+                                    Ok(AddResultSuccess::Exists(_k)) => Ok(Resp::ToKeyExists(r_for_resp.clone())),
+                                    Err(e) => Ok(Resp::Error(e))
+                                }
+                            ).map_err(|e| InternalError::from(e))
+                        },
+                        GetResultSuccess::NotFound(_uid) => Ok(Resp::FromKeyNotFound(r_for_resp))
+                    }
+            }
         };
 
-        debug!("Copy Response: '{:?}'", res); 
-        Ok(Response::new(CopyResponse { resp: Some(res) }))
+        let resp: Resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+        
+        debug!("Copy Response: '{:?}'", resp); 
+        Ok(Response::new(CopyResponse { resp: Some(resp) }))
     }
 
     async fn delete(&self, request: Request<DeleteRequest>) -> GrpcResult<DeleteResponse> {
@@ -177,15 +174,14 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.key, self.addr);
 
-        let key = r.key.map(|k| KeyString(k.key));
-        
         let res = match &self.tree { 
-            SimpleKeyColumn(tree) => 
-                match delete(&tree, key) {
+            SimpleKeyColumn(tree) => {
+                match unwrap_field(r.key, "key").and_then(|key| delete(&tree, KeyString(key.key))) {
                     Ok(Success(k)) => Resp::Success(to_key_uid(&k)),
                     Ok(NotFound(k)) => Resp::NotFound(to_key_uid(&k)), 
                     Err(e) => Resp::Error(e)
                 }
+            }
         };
 
         Ok(Response::new(DeleteResponse { resp: Some(res) }))
@@ -197,11 +193,9 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.key, self.addr); // TODO: Fix tracing and remove
 
-        let key = r.key.map(|k| KeyString(k.key));
-        
         let res = match &self.tree { 
-            SimpleKeyColumn(tree) => 
-                match get::<_,KvEntry>(&tree, key) {
+            SimpleKeyColumn(tree) =>
+                match unwrap_field(r.key, "key").and_then(|key| get(&tree, KeyString(key.key))) {
                     Ok(GetResultSuccess::Success(_k, v)) => if r.return_metadata { Resp::Success(v) } else { Resp::Success(KvEntry { metadata: None, value: v.value }) },
                     Ok(GetResultSuccess::NotFound(k)) => Resp::NotFound(to_key_uid(&k)), 
                     Err(e) => Resp::Error(e)
@@ -216,11 +210,9 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Contains Received: '{:?}' (from {})", r.key, self.addr);
 
-        let key = r.key.map(|k| KeyString(k.key));
-
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
-                match contains_key(&tree, key) {
+                match unwrap_field(r.key, "key").and_then(|key| contains_key(&tree, KeyString(key.key))) {
                     Ok(v) => contains_response::Resp::Success(v),
                     Err(e) => contains_response::Resp::Error(e)
                 }
