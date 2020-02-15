@@ -3,8 +3,6 @@ use std::*;
 use crate::pb::*;
 use internal_error::{Cause::*};
 
-use sled::{TransactionError};
-
 // fn format_internal_error(e: InternalError) -> String {
 //     match e.cause {
 //         None => String::from("Undefined error"),
@@ -37,12 +35,6 @@ impl From<::sled::Error> for InternalError {
     }
 }
 
-// impl From<sled::result::Error> for InternalError {
-//     fn from(error: sled::result::Error) -> Self {
-//         InternalError { cause: Some(StorageError(error.to_string())) }
-//     }
-// }
-
 impl<T: fmt::Debug> From<::sled::ConflictableTransactionError<T>> for InternalError {
     fn from(e: ::sled::ConflictableTransactionError<T>) -> Self {
         InternalError { cause: Some(TransactionAborted(format!("{:?}", e))) }
@@ -54,9 +46,3 @@ impl<T: fmt::Debug> From<::sled::TransactionError<T>> for InternalError {
         InternalError { cause: Some(TransactionAborted(format!("{:?}", e))) }
     }
 }
-
-// impl From<::sled::transaction::UnabortableTransactionError> for InternalError {
-//     fn from(error: ::sled::transaction::UnabortableTransactionError) -> Self {
-//         InternalError { cause: Some(TransactionAborted(error.to_string())) }
-//     }
-// }

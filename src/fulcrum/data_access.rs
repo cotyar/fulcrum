@@ -2,13 +2,8 @@
 #![warn(unused_imports)]
 
 use core::hash::{Hash, Hasher};
-use core::mem::size_of;
-use core::future::Future;
 use tokio::sync::{mpsc, mpsc::*};
 use std::fmt;
-use std::sync::Arc;
-use std::thread;
-use crossbeam_epoch::{self as epoch, Atomic, Owned};
 
 use bytes::{Bytes, Buf};
 
@@ -18,15 +13,14 @@ use async_trait::async_trait;
 use crate::pb::*;
 use internal_error::{*, Cause::*};
 
-use tracing::{debug, error, Level};
+use tracing::{debug, error};
 
 use sled::{IVec, Tree, TransactionalTree};
-//use sled::{TransactionError, TransactionResult, abort, Transactional, ConflictableTransactionResult, ConflictableTransactionError};
 
 pub trait ProstMessage : ::prost::Message + Default {}
 pub trait Uid : fmt::Debug + Send + Sync + Clone + fmt::Display {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError>;
-    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<Self, InternalError>;
+    fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<Self, InternalError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +68,7 @@ impl Uid for KeyVec {
     fn to_key_bytes(self: &Self) -> Result<Vec<u8>, InternalError> {
         Ok(self.0.clone())
     }
-    fn from_key_bytes<B: Buf>(mut msg_bytes: B) -> Result<KeyVec, InternalError> {
+    fn from_key_bytes<B: Buf>(msg_bytes: B) -> Result<KeyVec, InternalError> {
         Ok(KeyVec(msg_bytes.bytes().iter().cloned().collect()))
     }
 }
@@ -185,14 +179,6 @@ impl<T: ProstMessage> ProstMessageExt for T {
 pub fn unwrap_field<T>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
     msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
 }
-
-// pub fn process_uid<T: Uid, U> (r_uid: Option<T>, f: impl FnOnce(&T, &Vec<u8>) -> Result<U, InternalError>) -> Result<(T, U), InternalError> {
-//     let uid = unwrap_field(r_uid, "uid")?;
-//     let uid_bytes = uid.to_key_bytes()?;
-
-//     let old_value = f(&uid, &uid_bytes)?;
-//     Ok((uid, old_value))
-// }
 
 #[derive(Debug)]
 pub enum GetResultSuccess<T: Uid, U: ProstMessage> {

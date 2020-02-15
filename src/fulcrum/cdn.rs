@@ -1,17 +1,11 @@
-use tracing::{debug, error, Level};
-// use tracing_subscriber::FmtSubscriber;
+use tracing::{debug, error};
 use tracing_attributes::instrument;
 // use tracing_futures;
 
-// use futures::Stream;
-use std::fmt;
 use std::net::SocketAddr;
 // use std::hash::{Hash, Hasher};
 use std::collections::HashSet;
 use std::collections::VecDeque;
-
-use prost::Message;
-use bytes::{Buf};
 
 use sled::{Tree, TransactionError};
 
@@ -105,7 +99,7 @@ impl CdnQuery for CdnServer {
         debug!("Get Received: '{:?}' (from {})", r.uid, self.addr); // TODO: Fix tracing and remove
         
         let res = match get(&self.tree, r.uid) {
-            Ok(Success(uid, v)) => Resp::Success(v),
+            Ok(Success(_uid, v)) => Resp::Success(v),
             Ok(NotFound(uid)) => Resp::NotFound(uid), 
             Err(e) => Resp::Error(e)
         };
@@ -136,7 +130,7 @@ impl CdnQuery for CdnServer {
 
         let key = r.uid;
 
-        let (mut tx, rx) = mpsc::channel(4);
+        let (mut tx, rx) = mpsc::channel(100); // TODO: Move constant to config
         let tree = self.tree.clone();
 
         async fn get_kv(tree: &Tree, tx: &mut StreamValueStreamSender, key: Option<CdnUid>) -> Vec<CdnUid> {
