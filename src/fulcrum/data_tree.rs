@@ -1,6 +1,8 @@
 #![warn(dead_code)]
 
 
+use crate::error_handling::unwrap_field;
+use core::borrow::Borrow;
 use tracing::{debug, error};
 use std::hash::{Hash, Hasher};
 
@@ -13,7 +15,7 @@ use tonic::{Request, Response, Status /*, Streaming*/};
 use crate::data_access::*;
 use crate::pb::*;
 
-use sled::{Tree};
+use sled::{Tree, Transactional, abort};
 use data_tree_server::DataTree;
 use crate::data_tree::KeyColumn::*;
 
@@ -24,7 +26,7 @@ use siphasher::sip::{SipHasher24};
 #[derive(Debug, Clone)]
 pub enum KeyColumn {
     SimpleKeyColumn(Tree),
-    // IndexedKeyColumn { uid_tree: Tree, index_tree: Tree } 
+    IndexedKeyColumn { uid_tree: Tree, index_tree: Tree } 
 }
 
 #[derive(Debug, Clone)]
@@ -88,37 +90,35 @@ impl DataTree for DataTreeServer {
         debug!("Add Received: '{:?}':'{:?}' (from {})", r.key, r.value, self.addr);        
         
         let res = || {
+            let key = unwrap_field(r.key, "key")?;
+            let (kv_entry, key, key_uid) = build_kv_entry(key, r.value);
+            
             match &self.tree { 
                 SimpleKeyColumn(tree) => {
-                    let key = unwrap_field(r.key, "key")?;
-                    let (kv_entry, key, _key_uid) = build_kv_entry(key, r.value);
-                    
                     tree.transaction::<_,_,InternalError>(|tree| {
                         match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
                             Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
                             Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
-                            Err(e) => Ok(Resp::Error(e))
+                            Err(e) => abort(e)?
                         }
                     }).map_err(|e| InternalError::from(e))
                 },
-                // IndexedKeyColumn { uid_tree, index_tree }  => {
-                //     let kv = build_kv_entry(r.key, r.value);
-                //     let (kv_entry, key, _key_uid) = (kv.clone().map(|(v,_,_)| v), kv.clone().map(|(_,v,_)| v), kv.map(|(_,_,v)| v));
+                IndexedKeyColumn { uid_tree, index_tree }  => {
+                    let ret_key = Key { key: key.0.clone(), key_family: None, uid: Some(key_uid.clone()) };
                     
-                //     let add_result: Result<_, TransactionError<InternalError>> = tree.transaction(move |tree| {
-                //         match add(tree, key.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
-                //             Ok(Success(k)) => Ok(Resp::Success(Key { key: k.0, key_family: None, uid: None })),
-                //             Ok(Exists(k)) => Ok(Resp::Exists(Key { key: k.0, key_family: None, uid: None })), 
-                //             Err(e) => Ok(Resp::Error(e))
-                //         }
-                //     });
-                //     let add_res: Result<_, InternalError> = add_result.map_err(|e| e.into());
-
-                //     match add_res {
-                //         Ok(r) => r,
-                //         Err(e) => Resp::Error(e)
-                //     } 
-                // }
+                    (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
+                        match add(uid_tree, key_uid.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
+                            Ok(Success(kuid)) => 
+                                match add(index_tree, key.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
+                                    Ok(Success(_)) => Ok(Resp::Success(ret_key.clone())),
+                                    Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                                    Err(e) => Ok(Resp::Error(e)) // TODO: Fix abort generic param
+                                },
+                            Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                            Err(e) => Ok(Resp::Error(e))
+                        }
+                    }).map_err(|e| InternalError::from(e)) 
+                }
             }
         };
 
@@ -143,18 +143,36 @@ impl DataTree for DataTreeServer {
             let key_to = unwrap_field(r.key_to, "key_to")?;
             match &self.tree { 
                 SimpleKeyColumn(tree) => 
-                    match get::<_, KvEntry>(&tree, KeyString(key_from.key))? {
-                        GetResultSuccess::Success(_uid, v) => {
-                            tree.transaction::<_,_,InternalError>(|tree|
+                    tree.transaction::<_,_,InternalError>(|tree|
+                        match tree.get::<_, KvEntry>(KeyString(key_from.key))? {
+                            GetResultSuccess::Success(_uid, v) => {
                                 match add(&tree, KeyString(key_to.key.clone()), v.clone()) { // TODO: Add override flag and/or "return previous" // TODO: Update metadata
                                     Ok(AddResultSuccess::Success(_k)) => Ok(Resp::Success(r_for_resp.clone())),
                                     Ok(AddResultSuccess::Exists(_k)) => Ok(Resp::ToKeyExists(r_for_resp.clone())),
                                     Err(e) => Ok(Resp::Error(e))
                                 }
-                            ).map_err(|e| InternalError::from(e))
-                        },
-                        GetResultSuccess::NotFound(_uid) => Ok(Resp::FromKeyNotFound(r_for_resp))
-                    }
+                            },
+                            GetResultSuccess::NotFound(_uid) => Ok(Resp::FromKeyNotFound(r_for_resp))
+                        }
+                    ).map_err(|e| InternalError::from(e)),
+                IndexedKeyColumn { uid_tree, index_tree }  => { // !!!
+                    let key = unwrap_field(r.key, "key")?;
+                    let (kv_entry, key, key_uid) = build_kv_entry(key, r.value);
+                    let ret_key = Key { key: key.0.clone(), key_family: None, uid: Some(key_uid.clone()) };
+                    
+                    (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
+                        match add(uid_tree, key_uid.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
+                            Ok(Success(kuid)) => 
+                                match add(index_tree, key.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
+                                    Ok(Success(_)) => Ok(Resp::Success(ret_key.clone())),
+                                    Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                                    Err(e) => Ok(Resp::Error(e)) // TODO: Fix abort generic param
+                                },
+                            Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                            Err(e) => Ok(Resp::Error(e))
+                        }
+                    }).map_err(|e| InternalError::from(e)) 
+                }
             }
         };
 
@@ -174,17 +192,59 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.key, self.addr);
 
-        let res = match &self.tree { 
-            SimpleKeyColumn(tree) => {
-                match unwrap_field(r.key, "key").and_then(|key| delete(&tree, KeyString(key.key))) {
-                    Ok(Success(k)) => Resp::Success(to_key_uid(&k)),
-                    Ok(NotFound(k)) => Resp::NotFound(to_key_uid(&k)), 
-                    Err(e) => Resp::Error(e)
+        let res = || {
+            let key = unwrap_field(r.key, "key")?;
+            match &self.tree { 
+                SimpleKeyColumn(tree) => {
+                    tree.transaction::<_,_,InternalError>(|tree| {
+                        match delete(&tree, KeyString(key.key)) {
+                            Ok(Success(k)) => Ok(Resp::Success(to_key_uid(&k))),
+                            Ok(NotFound(k)) => Ok(Resp::NotFound(to_key_uid(&k))), 
+                            Err(e) => Ok(Resp::Error(e))
+                        }
+                    }).map_err(|e| InternalError::from(e))
+                },
+                IndexedKeyColumn { uid_tree, index_tree }  => {
+                    let key = unwrap_field(r.key, "key")?;
+                    let key_uid = key.uid.
+                        or_else(|| Some(to_key_uid(&KeyString(key.key)))).
+                        unwrap(); // "Shouldn't ever fail here"
+
+                    (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
+                        match delete(&uid_tree, key_uid) {
+                            Ok(Success(k)) => {
+                                match delete(&index_tree, KeyString(key.key)) { // TODO: Refactor to accomodate key.key being empty and recheck not found (which means db inconsistency)
+                                    Ok(Success(k)) => Ok(Resp::Success(key_uid)),
+                                    Ok(NotFound(k)) => Ok(Resp::NotFound(key_uid)), 
+                                    Err(e) => Ok(Resp::Error(e))
+                                }
+                            },
+                            Ok(NotFound(k)) => Ok(Resp::NotFound(key_uid)), 
+                            Err(e) => Ok(Resp::Error(e))
+                        }
+
+    
+                        // match add(uid_tree, key_uid.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
+                        //     Ok(Success(kuid)) => 
+                        //         match add(index_tree, key.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
+                        //             Ok(Success(_)) => Ok(Resp::Success(ret_key.clone())),
+                        //             Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                        //             Err(e) => Ok(Resp::Error(e)) // TODO: Fix abort generic param
+                        //         },
+                        //     Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
+                        //     Err(e) => Ok(Resp::Error(e))
+                        // }
+                    }).map_err(|e| InternalError::from(e)) 
                 }
             }
         };
 
-        Ok(Response::new(DeleteResponse { resp: Some(res) }))
+        let resp: Resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+
+        Ok(Response::new(DeleteResponse { resp: Some(resp) }))
     }
 
     async fn get(&self, request: Request<GetRequest>) -> GrpcResult<GetResponse> {
@@ -193,17 +253,39 @@ impl DataTree for DataTreeServer {
         let r = request.into_inner();
         debug!("Get Received: '{:?}' (from {})", r.key, self.addr); // TODO: Fix tracing and remove
 
-        let res = match &self.tree { 
-            SimpleKeyColumn(tree) =>
-                match unwrap_field(r.key, "key").and_then(|key| get(&tree, KeyString(key.key))) {
-                    Ok(GetResultSuccess::Success(_k, v)) => if r.return_metadata { Resp::Success(v) } else { Resp::Success(KvEntry { metadata: None, value: v.value }) },
-                    Ok(GetResultSuccess::NotFound(k)) => Resp::NotFound(to_key_uid(&k)), 
-                    Err(e) => Resp::Error(e)
+        let res = || {
+            let key = unwrap_field(r.key, "key")?;
+            match &self.tree { 
+                SimpleKeyColumn(tree) =>
+                    match get(&tree, KeyString(key.key)) {
+                        Ok(GetResultSuccess::Success(_k, v)) => 
+                            Ok(if r.return_metadata { Resp::Success(v) } else { Resp::Success(KvEntry { metadata: None, value: v.value }) }),
+                        Ok(GetResultSuccess::NotFound(k)) => Ok(Resp::NotFound(to_key_uid(&k))), 
+                        Err(e) => Ok(Resp::Error(e))
+                    },
+                IndexedKeyColumn { uid_tree, index_tree }  => {
+                    let key = unwrap_field(r.key, "key")?;
+                    let key_uid = key.uid.
+                        or_else(|| Some(to_key_uid(&KeyString(key.key)))).
+                        unwrap(); // "Shouldn't ever fail here" 
+                    
+                    match get(&uid_tree, KeyString(key.key)) {
+                        Ok(GetResultSuccess::Success(_k, v)) => 
+                            Ok(if r.return_metadata { Resp::Success(v) } else { Resp::Success(KvEntry { metadata: None, value: v.value }) }),
+                        Ok(GetResultSuccess::NotFound(k)) => Ok(Resp::NotFound(to_key_uid(&k))), 
+                        Err(e) => Ok(Resp::Error(e))
+                    } 
                 }
+            }
         };
 
-        debug!("Get Response: '{:?}'", res); 
-        Ok(Response::new(GetResponse { resp: Some(res) }))
+        let resp: Resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+
+        debug!("Get Response: '{:?}'", resp); 
+        Ok(Response::new(GetResponse { resp: Some(resp) }))
     }
 
     async fn contains(&self, request: Request<ContainsRequest>) -> GrpcResult<ContainsResponse> {
@@ -213,6 +295,15 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 match unwrap_field(r.key, "key").and_then(|key| contains_key(&tree, KeyString(key.key))) {
+                    Ok(v) => contains_response::Resp::Success(v),
+                    Err(e) => contains_response::Resp::Error(e)
+                },
+            IndexedKeyColumn { uid_tree, index_tree } => 
+                match unwrap_field(r.key, "key").and_then(|key| 
+                        match key.uid { 
+                            Some(uid) => contains_key(&uid_tree, uid),
+                            None => contains_key(&index_tree, KeyString(key.key))
+                        }) {
                     Ok(v) => contains_response::Resp::Success(v),
                     Err(e) => contains_response::Resp::Error(e)
                 }
@@ -244,6 +335,9 @@ impl DataTree for DataTreeServer {
         let res = match &self.tree { 
             SimpleKeyColumn(tree) => 
                 get_page_by_prefix_str(tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 
+                    1000, result_mapper).await,
+            IndexedKeyColumn { uid_tree, index_tree } => 
+                get_page_by_prefix_str(index_tree, 100, Some(KeyString(r.key_prefix)), Some(r.page), Some(r.page_size), 
                     1000, result_mapper).await
         };
 

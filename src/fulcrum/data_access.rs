@@ -1,6 +1,7 @@
 #![warn(dead_code)]
 #![warn(unused_imports)]
 
+use crate::error_handling::unwrap_field;
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use tokio::sync::{mpsc, mpsc::*};
@@ -177,10 +178,6 @@ impl<T: ProstMessage> ProstMessageExt for T {
     }
 }
 
-pub fn unwrap_field<T>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
-    msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
-}
-
 #[derive(Debug)]
 pub enum GetResultSuccess<K: Uid + Borrow<K>, U: ProstMessage> {
     Success (K, U),
@@ -293,10 +290,10 @@ pub enum DeleteResultSuccess<K: Uid> {
 
 pub type DeleteResult<K> = std::result::Result<DeleteResultSuccess<K>, InternalError>;
 
-pub fn delete<K: Uid> (tree: &Tree, key: K) -> DeleteResult<K> {
+pub fn delete<K: Uid> (tree: &TransactionalTree, key: K) -> DeleteResult<K> {
     let key_bytes = key.to_key_bytes()?;
 
-    let v = tree.remove(key_bytes)?;
+    let v = tree.remove(key_bytes).map_err(|e| ConflictableTransactionError::<Option<IVec>>::from(e))?;
     match v {
         Some(_) => Ok(DeleteResultSuccess::Success(key)),
         None => Ok(DeleteResultSuccess::NotFound(key))

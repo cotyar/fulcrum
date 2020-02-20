@@ -1,3 +1,4 @@
+use crate::error_handling::unwrap_field;
 use tracing::{debug, error};
 use tracing_attributes::instrument;
 // use tracing_futures;
@@ -44,18 +45,13 @@ impl CdnControl for CdnServer {
             let uid: CdnUid = unwrap_field(r.uid, "uid")?;
             let value = unwrap_field(r.value, "value")?;
             
-            let tr = self.tree.transaction::<_,_,InternalError>(|tree| {
+            self.tree.transaction::<_,_,InternalError>(|tree| {
                 match add(tree, uid.clone(), value.clone()) { // TODO: Add override flag and/or "return previous"
                     Ok(AddResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
                     Ok(AddResultSuccess::Exists(uid)) => Ok(Resp::Exists(uid)), 
                     Err(e) => Ok(Resp::Error(e))
                 }
-            }).map_err(|e| InternalError::from(e));
-            
-            // let tr = self.tree.transaction::<_,_,InternalError>(|tree| {
-            //     add(tree, uid, value)?
-            // }).map_err(|e| InternalError::from(e));
-            tr
+            }).map_err(|e| InternalError::from(e))
         };
 
         let resp = match res() {
@@ -72,13 +68,25 @@ impl CdnControl for CdnServer {
         let r = request.into_inner();
         debug!("'{:?}' (from {})", r.uid, self.addr);
         
-        let res = match unwrap_field(r.uid, "uid").and_then(|uid| delete(&self.tree, uid)) {
-            Ok(DeleteResultSuccess::Success(uid)) => Resp::Success(uid),
-            Ok(DeleteResultSuccess::NotFound(uid)) => Resp::NotFound(uid), 
-            Err(e) => Resp::Error(e)
+        let res = || {
+            let uid: CdnUid = unwrap_field(r.uid, "uid")?;
+            
+            self.tree.transaction::<_,_,InternalError>(|tree| {
+                match delete(tree, uid) {
+                    Ok(DeleteResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
+                    Ok(DeleteResultSuccess::NotFound(uid)) => Ok(Resp::NotFound(uid)), 
+                    Err(e) => Ok(Resp::Error(e))
+                }
+            }).map_err(|e| InternalError::from(e))
         };
 
-        Ok(Response::new(CdnDeleteResponse { resp: Some(res) }))
+        let resp = match res() {
+            Ok(r) => r,
+            Err(e) => Resp::Error(e)
+        }; 
+
+
+        Ok(Response::new(CdnDeleteResponse { resp: Some(resp) }))
     }
 }
 

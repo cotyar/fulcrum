@@ -46,3 +46,8 @@ impl<T: fmt::Debug> From<::sled::TransactionError<T>> for InternalError {
         InternalError { cause: Some(TransactionAborted(format!("{:?}", e))) }
     }
 }
+
+pub fn unwrap_field<T>(msg: Option<T>, field_name: &str) -> Result<T, InternalError> { 
+    msg.ok_or(InternalError { cause: Some(MissingRequiredArgument(field_name.to_string())) })
+}
+
