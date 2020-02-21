@@ -4,7 +4,7 @@
 use crate::error_handling::unwrap_field;
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
-use tokio::sync::{mpsc, mpsc::*};
+use tokio::sync::{mpsc, mpsc::Receiver};
 use std::fmt;
 
 use bytes::{Bytes, Buf};
@@ -189,6 +189,21 @@ pub type GetResult<K, U> = std::result::Result<GetResultSuccess<K, U>, InternalE
 pub fn get<K: Uid + Borrow<K>, U: ProstMessage> (tree: &Tree, key: K) -> GetResult<K, U> {
     let key_bytes = key.to_key_bytes()?;
     let v_bytes_opt = tree.get(key_bytes)?;
+    match v_bytes_opt {
+        Some (v_bytes) => {
+            let bts = v_bytes.to_vec();
+            let v = U::from_bytes(Bytes::from(bts))?;
+            Ok(GetResultSuccess::Success(key, v))
+        },
+        None => Ok(GetResultSuccess::NotFound(key))
+    }
+}
+
+pub fn get_transactional<K: Uid + Borrow<K>, U: ProstMessage> (tree: &TransactionalTree, key: K) -> GetResult<K, U> {
+    let key_bytes = key.to_key_bytes()?;
+    let v_bytes_opt = tree.get(key_bytes)    
+        .map_err(ConflictableTransactionError::<Option<IVec>>::from)
+        .map_err(InternalError::from)?;
     match v_bytes_opt {
         Some (v_bytes) => {
             let bts = v_bytes.to_vec();

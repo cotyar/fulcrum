@@ -72,9 +72,9 @@ impl CdnControl for CdnServer {
             let uid: CdnUid = unwrap_field(r.uid, "uid")?;
             
             self.tree.transaction::<_,_,InternalError>(|tree| {
-                match delete(tree, uid) {
-                    Ok(DeleteResultSuccess::Success(uid)) => Ok(Resp::Success(uid)),
-                    Ok(DeleteResultSuccess::NotFound(uid)) => Ok(Resp::NotFound(uid)), 
+                match delete(tree, uid.clone()) {
+                    Ok(DeleteResultSuccess::Success(uidd)) => Ok(Resp::Success(uidd)),
+                    Ok(DeleteResultSuccess::NotFound(uidd)) => Ok(Resp::NotFound(uidd)), 
                     Err(e) => Ok(Resp::Error(e))
                 }
             }).map_err(|e| InternalError::from(e))
