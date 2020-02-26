@@ -108,7 +108,7 @@ impl DataTree for DataTreeServer {
                     let ret_key = Key { key: key.0.clone(), key_family: None, uid: Some(key_uid.clone()) };
                     
                     let err: RefCell<Option<InternalError>> = RefCell::new(None);
-                    let ret = (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
+                    (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
                         match add(uid_tree, key_uid.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
                             Ok(Success(kuid)) => 
                                 match add(index_tree, key.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
@@ -125,8 +125,7 @@ impl DataTree for DataTreeServer {
                                 abort(())?
                             }
                         }
-                    }).map_err(|_e| err.into_inner().unwrap());
-                    ret
+                    }).map_err(|_e| err.into_inner().unwrap())
                 }
             }
         };
@@ -175,6 +174,7 @@ impl DataTree for DataTreeServer {
                         None => to_key_uid(&KeyString(key_from.key))
                     };
                     
+                    let err: RefCell<Option<InternalError>> = RefCell::new(None);
                     (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
                         match get_transactional::<_, KvEntry>(uid_tree, key_from_uid.clone()) {
                             Ok(GetResultSuccess::Success(kf_uid, from_kv_entry)) => {
@@ -184,16 +184,25 @@ impl DataTree for DataTreeServer {
                                         match add(index_tree, key_to.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
                                             Ok(AddResultSuccess::Success(_)) => Ok(Resp::Success(r_for_resp.clone())),
                                             Ok(AddResultSuccess::Exists(_)) => Ok(Resp::ToKeyExists(r_for_resp.clone())), 
-                                            Err(e) => Ok(Resp::Error(e)) // TODO: Fix abort generic param
+                                            Err(e) => {
+                                                *err.borrow_mut() = Some(e);
+                                                abort(())?
+                                            }
                                         },
                                     Ok(AddResultSuccess::Exists(_)) => Ok(Resp::FromKeyNotFound(r_for_resp.clone())), 
-                                    Err(e) => Ok(Resp::Error(e))
+                                    Err(e) => {
+                                        *err.borrow_mut() = Some(e);
+                                        abort(())?
+                                    }
                                 }
                             },
                             Ok(GetResultSuccess::NotFound(_uid)) => Ok(Resp::FromKeyNotFound(r_for_resp.clone())),
-                            Err(e) => Ok(Resp::Error(e)) //abort(e)?
+                            Err(e) => {
+                                *err.borrow_mut() = Some(e);
+                                abort(())?
+                            }
                         }
-                    }).map_err(|e| InternalError::from(e)) 
+                    }).map_err(|_e| err.into_inner().unwrap())
                 }
             }
         };
@@ -232,19 +241,26 @@ impl DataTree for DataTreeServer {
                         or_else(|| Some(to_key_uid(&k))).
                         unwrap(); // "Shouldn't ever fail here"
 
+                    let err: RefCell<Option<InternalError>> = RefCell::new(None);
                     (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
                         match delete(&uid_tree, key_uid.clone()) {
                             Ok(Success(k_uid)) => {
                                 match delete(&index_tree, k.clone()) { // TODO: Refactor to accomodate key.key being empty and recheck not found (which means db inconsistency)
                                     Ok(Success(_k)) => Ok(Resp::Success(k_uid)),
                                     Ok(NotFound(_k)) => Ok(Resp::NotFound(k_uid)), 
-                                    Err(e) => Ok(Resp::Error(e))
+                                    Err(e) => {
+                                        *err.borrow_mut() = Some(e);
+                                        abort(())?
+                                    }
                                 }
                             },
                             Ok(NotFound(k_uid)) => Ok(Resp::NotFound(k_uid)), 
-                            Err(e) => Ok(Resp::Error(e))
+                            Err(e) => {
+                                *err.borrow_mut() = Some(e);
+                                abort(())?
+                            }
                         }
-                    }).map_err(|e| InternalError::from(e)) 
+                    }).map_err(|_e| err.into_inner().unwrap())
                 }
             }
         };
