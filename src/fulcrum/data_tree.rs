@@ -1,6 +1,7 @@
 #![warn(dead_code)]
 
 
+use core::cell::RefCell;
 use crate::error_handling::unwrap_field;
 use core::borrow::Borrow;
 use tracing::{debug, error};
@@ -106,18 +107,26 @@ impl DataTree for DataTreeServer {
                 IndexedKeyColumn { uid_tree, index_tree }  => {
                     let ret_key = Key { key: key.0.clone(), key_family: None, uid: Some(key_uid.clone()) };
                     
-                    (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
+                    let err: RefCell<Option<InternalError>> = RefCell::new(None);
+                    let ret = (uid_tree, index_tree).transaction(|(uid_tree, index_tree)| {
                         match add(uid_tree, key_uid.clone(), kv_entry.clone()) { // TODO: Add override flag and/or "return previous"
                             Ok(Success(kuid)) => 
                                 match add(index_tree, key.clone(), kuid.clone()) { // TODO: Add override flag and/or "return previous"
                                     Ok(Success(_)) => Ok(Resp::Success(ret_key.clone())),
                                     Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
-                                    Err(e) => Ok(Resp::Error(e)) // TODO: Fix abort generic param
+                                    Err(e) => {
+                                        *err.borrow_mut() = Some(e);
+                                        abort(())?
+                                    }
                                 },
                             Ok(Exists(_)) => Ok(Resp::Exists(ret_key.clone())), 
-                            Err(e) => Ok(Resp::Error(e))
+                            Err(e) => {
+                                *err.borrow_mut() = Some(e);
+                                abort(())?
+                            }
                         }
-                    }).map_err(|e| InternalError::from(e)) 
+                    }).map_err(|_e| err.into_inner().unwrap());
+                    ret
                 }
             }
         };
