@@ -60,5 +60,9 @@ path = "src/echo/client.rs"
 
 # Fulcrum
 [[bin]] # Bin to run the Fulcrum Cdn gRPC server
-name = "cdn-server"
+name = "fulcrum-server"
 path = "src/fulcrum/server.rs"
+
+[[bin]] # Bin to run the Fulcrum Cdn gRPC client
+name = "fulcrum-client"
+path = "src/fulcrum/client/client.rs"
